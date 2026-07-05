@@ -105,9 +105,71 @@ def render_reschedule(lead, prefix):
                 return True
     return False
 
-st.sidebar.caption("Aprobación humana obligatoria antes de cada envío. "
-                   "La app no automatiza LinkedIn ni evade límites. "
-                   "Backup automático antes de cada guardado.")
+
+def _qp_value(qp, key):
+    value = qp.get(key)
+    if isinstance(value, list):
+        return value[0] if value else ""
+    return value or ""
+
+
+def _clear_gmail_oauth_state():
+    for k in ("gmail_auth_url", "gmail_oauth_state", "gmail_code_verifier"):
+        st.session_state.pop(k, None)
+
+
+def gmail_oauth_panel(cfg):
+    creds = st.session_state.get("gmail_creds")
+    if creds is not None:
+        return creds
+
+    qp = st.query_params
+    code = _qp_value(qp, "code")
+    state = _qp_value(qp, "state")
+
+    if code:
+        verifier = gmail_service.recover_verifier(state) or st.session_state.get("gmail_code_verifier")
+
+        if not verifier:
+            st.error("Se perdió la sesión de autorización de Gmail. Reintenta conexión.")
+            _clear_gmail_oauth_state()
+            if st.button("🔄 Reintentar conexión Gmail", key="gm_retry_missing"):
+                st.query_params.clear()
+                st.rerun()
+            return None
+
+        try:
+            creds = gmail_service.exchange_code(cfg, code, verifier)
+            st.session_state["gmail_creds"] = creds
+            _clear_gmail_oauth_state()
+            st.query_params.clear()
+            st.success("✅ Gmail conectado")
+            st.rerun()
+        except Exception as e:
+            st.error(f"No pude completar la autorización: {e}")
+            _clear_gmail_oauth_state()
+            if st.button("🔄 Reintentar conexión Gmail", key="gm_retry_exc"):
+                st.query_params.clear()
+                st.rerun()
+        return None
+
+    if st.button("🔗 Generar conexión Gmail", type="primary", key="gm_new_auth"):
+        try:
+            _clear_gmail_oauth_state()
+            auth_url, state, verifier = gmail_service.build_auth_url(cfg)
+            st.session_state["gmail_auth_url"] = auth_url
+            st.session_state["gmail_oauth_state"] = state
+            st.session_state["gmail_code_verifier"] = verifier
+            st.rerun()
+        except Exception as e:
+            st.error(f"No pude generar la URL de autorización: {e}")
+            return None
+
+    if "gmail_auth_url" in st.session_state:
+        st.link_button("Abrir consentimiento de Google", st.session_state["gmail_auth_url"], type="primary")
+        st.caption("Después de autorizar, volverás automáticamente a la app.")
+
+    return None
 
 # =========================================================================== #
 # 1) CAMPAÑA
@@ -858,29 +920,9 @@ elif page == "🔔 Notifications":
                         'redirect_uri = "https://TU-APP.streamlit.app"',
                         language="toml")
             else:
-                # --- Conexión / OAuth ---
-                creds = st.session_state.get("gmail_creds")
-
-                # ¿Volvimos del redirect de Google con ?code=... ?
-                qp = st.query_params
-                if creds is None and "code" in qp:
-                    try:
-                        creds = gmail_service.exchange_code(cfg, qp["code"])
-                        st.session_state["gmail_creds"] = creds
-                        st.query_params.clear()
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"No pude completar la autorización: {e}")
-
-                if creds is None:
-                    try:
-                        auth_url, _state = gmail_service.build_auth_url(cfg)
-                        st.link_button("🔗 Conectar Gmail", auth_url, type="primary")
-                        st.caption("Se abrirá el consentimiento de Google (lectura y "
-                                   "envío de Gmail). Al autorizar, volverás a la app.")
-                    except Exception as e:
-                        st.error(f"No pude generar la URL de autorización: {e}")
-                else:
+                # --- Conexión / OAuth (PKCE con code_verifier persistido) ---
+                creds = gmail_oauth_panel(cfg)
+                if creds is not None:
                     ok = True
                     try:
                         me = gmail_service.whoami(creds)
@@ -1258,19 +1300,9 @@ elif page == "📮 Gmail Campaigns":
             cfg, err = gmail_service.read_google_secrets(st)
             if err:
                 st.error(err)
-            elif creds is None:
-                qp = st.query_params
-                if "code" in qp:
-                    try:
-                        creds = gmail_service.exchange_code(cfg, qp["code"])
-                        st.session_state["gmail_creds"] = creds
-                        st.query_params.clear()
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"No pude completar la autorización: {e}")
-                auth_url, _ = gmail_service.build_auth_url(cfg)
-                st.link_button("🔗 Conectar Gmail", auth_url, type="primary")
             else:
+                creds = gmail_oauth_panel(cfg)
+            if creds is not None and not err:
                 try:
                     me = gmail_service.whoami(creds)
                     crm.save_gmail_account(me)

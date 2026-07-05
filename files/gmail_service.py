@@ -15,6 +15,7 @@ Requiere: google-auth, google-auth-oauthlib, google-api-python-client
 
 from __future__ import annotations
 import base64
+import secrets
 import datetime as dt
 from email.mime.text import MIMEText
 from email.utils import parseaddr
@@ -32,7 +33,7 @@ try:
     from google_auth_oauthlib.flow import Flow
     from googleapiclient.discovery import build
     from googleapiclient.errors import HttpError
-except Exception as e:
+except Exception as e:  # librerías no instaladas
     _IMPORT_ERROR = e
     Credentials = Flow = build = HttpError = None
 
@@ -43,7 +44,7 @@ def libs_available() -> bool:
 
 def libs_error() -> str:
     return ("Faltan librerías de Google. Instala con: "
-            "pip install google-auth google-auth-oauthlib google-auth-httplib2 google-api-python-client"
+            "pip install google-auth google-auth-oauthlib google-api-python-client"
             if _IMPORT_ERROR else "")
 
 
@@ -86,21 +87,65 @@ def _client_config(cfg):
 # OAuth (authorization code flow para app web)
 # --------------------------------------------------------------------------- #
 
-def build_auth_url(cfg) -> tuple[str, str]:
-    """Devuelve (auth_url, state). El usuario abre la URL, autoriza, y Google
-    redirige a redirect_uri con ?code=..."""
+def _pack_state(code_verifier: str) -> str:
+    """Empaqueta el code_verifier dentro del parámetro 'state' de OAuth.
+    Google devuelve 'state' intacto en el callback, así que el verifier
+    sobrevive aunque Streamlit pierda la sesión durante el redirect.
+    Nota de seguridad: en un cliente confidencial (web app con client_secret)
+    PKCE es defensa adicional; el intercambio de token sigue exigiendo el
+    client_secret, que nunca viaja en la URL."""
+    import json as _json
+    payload = {"v": code_verifier, "n": secrets.token_urlsafe(8)}
+    return base64.urlsafe_b64encode(
+        _json.dumps(payload).encode()).decode().rstrip("=")
+
+
+def recover_verifier(state: str) -> str | None:
+    """Recupera el code_verifier empaquetado en 'state' (o None si no se puede)."""
+    import json as _json
+    try:
+        pad = "=" * (-len(state) % 4)
+        payload = _json.loads(base64.urlsafe_b64decode(state + pad))
+        return payload.get("v") or None
+    except Exception:
+        return None
+
+
+def build_auth_url(cfg) -> tuple[str, str, str]:
+    """Devuelve (auth_url, state, code_verifier). PKCE activo
+    (autogenerate_code_verifier=True); el verifier se devuelve para guardarlo
+    en st.session_state Y va empaquetado en 'state' como respaldo ante la
+    pérdida de sesión que provoca el redirect en Streamlit."""
     flow = Flow.from_client_config(_client_config(cfg), scopes=SCOPES,
-                                   redirect_uri=cfg["redirect_uri"])
+                                   redirect_uri=cfg["redirect_uri"],
+                                   autogenerate_code_verifier=True)
+    # authorization_url genera el code_verifier al construir la URL
     auth_url, state = flow.authorization_url(
-        access_type="offline", include_granted_scopes="true", prompt="consent")
-    return auth_url, state
+        access_type="offline", include_granted_scopes="true", prompt="consent",
+        state=None)
+    code_verifier = flow.code_verifier
+    # re-generar la URL con el verifier empaquetado en state
+    packed = _pack_state(code_verifier)
+    flow2 = Flow.from_client_config(_client_config(cfg), scopes=SCOPES,
+                                    redirect_uri=cfg["redirect_uri"],
+                                    code_verifier=code_verifier,
+                                    autogenerate_code_verifier=False)
+    auth_url, state = flow2.authorization_url(
+        access_type="offline", include_granted_scopes="true", prompt="consent",
+        state=packed)
+    return auth_url, state, code_verifier
 
 
-def exchange_code(cfg, code: str):
-    """Intercambia el código de autorización por credenciales. Devuelve un dict
-    serializable para guardar en st.session_state (no en disco, no en Git)."""
+def exchange_code(cfg, code: str, code_verifier: str):
+    """Intercambia el código por credenciales usando el MISMO code_verifier
+    generado en build_auth_url (PKCE). Devuelve un dict serializable para
+    st.session_state (no en disco, no en Git)."""
+    if not code_verifier:
+        raise ValueError("Missing code verifier: reinicia la conexión Gmail.")
     flow = Flow.from_client_config(_client_config(cfg), scopes=SCOPES,
-                                   redirect_uri=cfg["redirect_uri"])
+                                   redirect_uri=cfg["redirect_uri"],
+                                   code_verifier=code_verifier,
+                                   autogenerate_code_verifier=False)
     flow.fetch_token(code=code)
     c = flow.credentials
     return {

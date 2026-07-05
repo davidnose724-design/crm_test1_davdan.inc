@@ -67,7 +67,14 @@ class GmailIntegration(ChannelIntegration):
     supports_api = True
 
     def is_configured(self) -> bool:
-        # La app buscaría credenciales OAuth en el entorno del usuario (no en el código).
+        # 1) st.secrets (Streamlit) — 2) variables de entorno. Nunca en el código.
+        try:
+            import streamlit as st
+            g = st.secrets.get("google", {})
+            if g.get("client_id") and g.get("client_secret"):
+                return True
+        except Exception:
+            pass
         return bool(os.environ.get("GMAIL_OAUTH_CLIENT_ID")
                     and os.environ.get("GMAIL_OAUTH_CLIENT_SECRET"))
 
@@ -75,8 +82,9 @@ class GmailIntegration(ChannelIntegration):
         cfg = self.is_configured()
         return ChannelStatus(
             self.name, "api" if cfg else "manual", cfg,
-            "Listo para Gmail API (OAuth 2.0) cuando se configuren credenciales por "
-            "variables de entorno. Hoy: registro manual.")
+            "Gmail API (OAuth 2.0) " + ("configurada vía st.secrets: usa la pestaña "
+            "📧 Gmail en Notifications." if cfg else
+            "no configurada. Agrega [google] a st.secrets. Hoy: registro manual."))
 
 
 class WhatsAppIntegration(ChannelIntegration):

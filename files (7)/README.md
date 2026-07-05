@@ -378,3 +378,160 @@ crean al final, backup antes de guardar y aviso si el Excel está abierto.
 Sin envíos automáticos, sin scraping, sin credenciales en el código; integraciones futuras
 solo por APIs oficiales. Compatibilidad con el Excel actual, columnas faltantes creadas al
 final, backup antes de guardar y aviso si el Excel está abierto.
+
+---
+
+# Actualización v6 — Integración Gmail API (OAuth 2.0 vía st.secrets)
+
+## Archivos nuevos / modificados
+- **`gmail_service.py`** (NUEVO): módulo aislado de Gmail — OAuth 2.0 (authorization code
+  flow), lectura de correos recientes (readonly), matching remitente→lead, envío de
+  respuestas con MIME correcto (threading con In-Reply-To/References). Degradación limpia
+  si faltan librerías o secrets.
+- **`app.py`**: pestaña **📧 Gmail** dentro de Notifications, con botón **Conectar Gmail**,
+  lectura de correos recientes, **detección de respuestas de leads** (cruza remitente vs
+  Email/Gmail del CRM), registro de la respuesta (pausa follow-ups + notificación +
+  Activity_Log) y **responder desde la app** (envío manual con botón, registrado en
+  Activity_Log y Notifications).
+- **`secrets.toml.example`** (NUEVO): plantilla con placeholders.
+- **`.gitignore`** (NUEVO): excluye `.streamlit/secrets.toml`, estado y backups.
+- **`requirements.txt`**: + google-auth, google-auth-oauthlib, google-api-python-client.
+- **`integrations.py`**: Gmail reporta "API lista" cuando hay `[google]` en st.secrets.
+
+## Configuración (una sola vez)
+1. En **Google Cloud Console** → APIs & Services → habilita **Gmail API**.
+2. En **Credentials** → OAuth client ID → tipo **Web application** → agrega tu
+   redirect URI EXACTO (tu URL de Streamlit Cloud).
+3. Pantalla de consentimiento (OAuth consent screen): agrega los scopes
+   `openid`, `userinfo.email`, `gmail.readonly`, `gmail.send`, y tu cuenta como
+   test user si la app está en modo Testing.
+4. Secrets:
+   - **Streamlit Cloud**: App → Settings → Secrets → pega el bloque `[google]`
+     con tus valores (client_id, client_secret, redirect_uri).
+   - **Local**: copia `secrets.toml.example` a `.streamlit/secrets.toml` y edítalo.
+5. `pip install -r requirements.txt` y listo: pestaña 📧 Gmail → **Conectar Gmail**.
+
+## Seguridad
+- **Cero credenciales en el código o en GitHub**: todo vive en st.secrets; el
+  `.gitignore` protege `secrets.toml`; la plantilla solo trae placeholders.
+- Si tu client_secret se compartió en algún chat/captura/commit, **rótalo** en Google
+  Cloud Console (Credentials → tu OAuth client → Reset secret).
+- Scopes mínimos (`gmail.readonly` + `gmail.send`); tokens solo en memoria de sesión
+  (st.session_state), no se escriben a disco ni al repo.
+- La app **nunca envía correos sola**: cada envío requiere que presiones el botón.
+- Solo API oficial de Google; sin scraping.
+
+---
+
+# Actualización v7 — Reprogramación de follow-ups, Cold Call, colores configurables y estados personalizados
+
+## Archivos modificados
+- **`crm_core.py`**: `reschedule_followup` (+ hoja **`Follow_Up_History`** con las 12
+  columnas), `register_cold_call` (9 resultados con sus acciones), configuración de
+  colores en hoja **`State_Color_Config`** (`read_state_colors`/`upsert_state_color`),
+  `resolve_display_state` y `apply_state_colors` (pintado con openpyxl `PatternFill`,
+  fila completa o solo celda de estado, blanco = limpiar). Columnas nuevas al final:
+  `Follow Up Step`, `Follow Up Channel`, `Next Follow Up Time`, `Follow Up Reason`,
+  `Owner/User`.
+- **`app.py`**: formulario de **reprogramación reutilizable** presente en Follow-ups,
+  Gmail (con acciones rápidas: Won/Lost/RFQ/Contactar después/Blacklist), Estados y
+  Notifications; **formulario de Cold Call** (fecha, resultado, nota, próxima acción,
+  próxima fecha); nueva sección **🎨 Configuración de Estados** (ver estados, elegir
+  color, fila-o-celda, crear estados personalizados con categoría/acción/prioridad,
+  botón **Aplicar colores ahora**); **Dashboard** con follow-ups vencidos/hoy/próximos
+  7 días, RFQ activos, cold calls pendientes, gmail pendientes y leads por estado/color.
+
+## Cómo se aplican los colores (y el conflicto con el formato heredado)
+El Excel original trae **formato condicional** por `Outcome Status` (Won verde, Lost
+morado, Blacklist rojo, Prospectar amarillo…), que en Excel **prevalece visualmente**
+sobre el pintado directo. La sección de Configuración incluye el checkbox
+**"Reemplazar formato condicional heredado"**:
+- **Desmarcado** (default): el CF clásico sigue mandando en esos estados; el pintado
+  estático cubre el resto (Follow Up pendiente, Mensaje enviado, estados custom…).
+- **Marcado**: se eliminan las reglas CF y tu configuración es la única fuente de color
+  (defaults sembrados: Won verde 00B050, Lost rojo FF0000, RFQ azul, Reunión morado,
+  Prospectar amarillo, Respondió interesado verde claro, No interesado naranja,
+  Blacklist gris, Follow Up pendiente amarillo claro, Mensaje enviado azul claro,
+  Nuevo lead blanco). Siempre con backup previo.
+
+## Historial de reprogramaciones
+Cada reprogramación (desde cualquier sección) agrega una fila a `Follow_Up_History`
+con timestamp, lead, fecha/canal anteriores y nuevos, motivo, nota, usuario y status;
+además actualiza la fila del lead (Next Follow-up, hora, canal, motivo, owner),
+re-sincroniza el scheduler interno, registra en Activity_Log y crea una notificación.
+El historial por lead se consulta en la sección Estados.
+
+---
+
+# Actualización v8 — Notificaciones configurables, Email Campaigns (auto-send opt-in), manejo de respuestas/rebotes, LinkedIn Manager asistido y Workflow Config
+
+## Archivos modificados
+- **`crm_core.py`**: hojas `Notification_Settings` y `Workflow_Config` (clave-valor con
+  defaults), `scan_no_response` (alertas por horas configurables: lead sin respuesta,
+  campaña lista para FU2/FU3, follow-up vencido, lead debe descartarse/reprogramarse);
+  hoja **`Campaigns`** con el workflow asistido completo (`create_campaign`,
+  `next_pending_lead`, `mark_campaign_sent` con avance automático de etapa y cálculo del
+  siguiente follow-up según config, auto-creación de "Follow Up N+1 - <campaña>" al
+  terminar excluyendo respondidos/blacklist/Won, `reschedule_campaign`,
+  `scan_campaign_reminders`); clasificador de respuestas Gmail (`classify_email_reply`:
+  bounce/blacklist/not_interested/rfq/meeting/later/interested), `handle_email_event`
+  (Email Bounced/Blocked/Do Not Contact detienen todo y cancelan la cola),
+  `process_due_emails` (cola con tope diario, skip+cancel de bloqueados, marca Sent antes
+  de enviar para evitar duplicados y revierte si el envío falla; función de envío
+  inyectable). Outcome nuevos: `Do Not Contact`, `Email Bounced`, `Blocked` (bloqueo duro).
+- **`gmail_service.py`**: `send_email` (correo nuevo para campañas).
+- **`app.py`**: secciones **📧 Email Campaigns** (filtros, variables {first}/{name}/
+  {company}/{title}/{industry}, cola en Scheduled_Messages, toggle **Auto-send enabled**
+  con advertencia de límites/spam/cumplimiento, "Procesar cola ahora", lectura y
+  clasificación de respuestas), **💼 LinkedIn Manager** (cola inteligente de un-lead-a-la-
+  vez con todos los datos, "Abrir perfil", mensaje sugerido editable/copiable, "Marcar
+  mensaje como enviado" → registra fecha/hora/usuario/canal/mensaje, avanza al siguiente,
+  reprogramación mañana/3 días/semana/personalizada, "Iniciar campaña", registro de
+  respuesta) y **⚙️ Workflow Config** (horas entre FU1→2/2→3/3→4, máx FUs, canal default,
+  horario/días permitidos, intervalo, y "Follow Up Notification Settings" con 24/30/48/
+  72/76/personalizado). Notifications con 3 escaneos; Dashboard con las 11 métricas nuevas.
+
+## Cómo se evita el desastre
+- **Duplicados**: la cola marca `Sent` ANTES del envío real (y revierte si falla), el
+  guard de etapa rechaza celdas ya marcadas y el tope diario se verifica por envío.
+- **Pausa al responder**: `Respondió` entra al guard `_is_blocked`; el lead sale de la
+  cola de campaña, del scheduler y del auto-send (sus mensajes pendientes se cancelan).
+- **Bounce/Blocked/Blacklist/Do Not Contact/Lost**: bloqueo duro — ningún flujo (manual
+  o automático) puede volver a enviarles; sus mensajes en cola se cancelan y se notifica.
+
+## Honestidad técnica del auto-send
+Streamlit no corre en segundo plano: el envío automático procesa los correos vencidos
+cuando la app está abierta (botón "Procesar cola ahora" con el toggle activo). Para envío
+24/7 haría falta un worker externo (cron/Cloud Scheduler), que puedo agregar aparte.
+
+---
+
+# Actualización v9 — Gmail Campaigns (login, sender, preview editable, Gmail Follow Up 1, respuestas)
+
+## Archivos modificados
+- **`crm_core.py`**: hojas **`Gmail_Accounts`** (upsert de cuenta conectada con Last
+  Sync), **`Gmail_Campaigns`**, **`Gmail_Campaign_Leads`** y **`Gmail_Follow_Ups`**
+  (`ensure_gmail_sheets` las crea si faltan, junto con Scheduled_Messages/
+  Follow_Up_History/Notifications/Activity_Log); `personalize` con variables
+  {{first_name}}, {{full_name}}, {{company}}, {{job_title}}, {{industry}},
+  {{seniority_level}}; `gmail_followup1_candidates` (recibieron email inicial, sin
+  respuesta, no bloqueados, ≥ horas configuradas, con horas transcurridas, último
+  mensaje, asunto anterior y próxima acción). Fix general: los registros de envío ahora
+  guardan el timestamp real del envío (antes usaban el momento del registro).
+- **`app.py`**: sección **📮 Gmail Campaigns** con 5 pestañas — Conexión (correo
+  conectado, estado, última sincronización, desconectar; cuenta guardada en
+  Gmail_Accounts), Crear campaña (los 13 filtros con exclusiones automáticas de
+  blacklist/lost/do-not-contact/sin-email, asunto/mensaje con variables, inicio,
+  intervalo, límite diario, confirmación manual y auto-send), Preview/cola (tabla con
+  las 10 columnas, editar mensaje por lead, excluir, guardar borrador, programar,
+  enviar lead por lead, enviar seleccionados con confirmación; registro en
+  Gmail_Campaigns + Gmail_Campaign_Leads), **Gmail Follow Up 1** (candidatos por
+  tiempo configurado con todas las columnas pedidas; seleccionar, editar, programar,
+  enviar con confirmación, reprogramar, nota; registro en Gmail_Follow_Ups) y
+  Respuestas ("Buscar respuestas recientes" → marca Respondió, detiene follow-ups,
+  clasificación de 9 opciones incluyendo Won y Do Not Contact). El formulario de
+  reprogramación ahora tiene opciones rápidas: mañana / 24h / 48h / 72h / 7 días /
+  personalizada.
+
+Reglas: credenciales solo en st.secrets, nunca a leads bloqueados o sin email, la
+secuencia se detiene al responder, todo va a Activity_Log, backup antes de guardar.

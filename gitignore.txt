@@ -1,0 +1,16 @@
+# SECRETS — nunca al repo
+.streamlit/secrets.toml
+secrets.toml
+*.secrets.toml
+
+# Estado y datos locales
+*.state.json
+backups/
+CRM_reporte_*.xlsx
+CRM_reporte_*.zip
+CRM_dashboard_*.xlsx
+
+# Python
+__pycache__/
+*.pyc
+.venv/

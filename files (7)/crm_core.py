@@ -36,7 +36,10 @@ INDUSTRIES = [
 ACTIVITY_LOG_SHEET = "Activity_Log"
 NOTIFICATIONS_SHEET = "Notifications"
 NON_DATA_SHEETS = {"Dashboard", "Lead Queue", ACTIVITY_LOG_SHEET, NOTIFICATIONS_SHEET,
-                   "Scheduled_Messages"}
+                   "Scheduled_Messages", "Follow_Up_History", "State_Color_Config",
+                   "Notification_Settings", "Workflow_Config", "Campaigns",
+                   "Gmail_Accounts", "Gmail_Campaigns", "Gmail_Campaign_Leads",
+                   "Gmail_Follow_Ups"}
 
 # Encabezados de la hoja Notifications.
 NOTIFICATION_HEADERS = [
@@ -72,6 +75,45 @@ CLASSIFY_COLUMNS = ["Lead Warmth Level", "Priority", "Recommended Channel", "Cur
 
 # Hoja de programación de mensajes (agenda manual; nunca se envía solo).
 SCHEDULED_SHEET = "Scheduled_Messages"
+
+# --- Reprogramación de follow-ups -------------------------------------------
+FOLLOWUP_HISTORY_SHEET = "Follow_Up_History"
+FU_HISTORY_HEADERS = [
+    "Timestamp", "Lead ID", "Full Name", "Company", "Previous Follow Up Date",
+    "New Follow Up Date", "Previous Channel", "New Channel", "Reason", "Notes",
+    "User", "Status",
+]
+# Columnas editables nuevas (se crean AL FINAL si faltan).
+RESCHEDULE_COLUMNS = ["Follow Up Step", "Follow Up Channel", "Next Follow Up Time",
+                      "Follow Up Reason", "Owner/User"]
+FOLLOWUP_CHANNELS = ["Gmail", "LinkedIn", "WhatsApp", "Cold Call", "Otro"]
+
+# --- Configuración de colores por estado -------------------------------------
+STATE_COLOR_SHEET = "State_Color_Config"
+STATE_COLOR_HEADERS = ["State", "Color", "Scope", "Category", "Suggested Action",
+                       "Priority", "Active"]
+STATE_CATEGORIES = ["activo", "cerrado", "pendiente", "bloqueo"]
+# Defaults sugeridos por el usuario (editables desde la app).
+DEFAULT_STATE_COLORS = [
+    # (State, ColorHex, Scope, Category, Suggested Action, Priority)
+    ("Won",                  "00B050", "row",  "cerrado",   "Onboarding / celebrar", "Alta"),
+    ("Lost",                 "FF0000", "row",  "cerrado",   "Analizar razón",        "Baja"),
+    ("RFQ",                  "9DC3E6", "row",  "activo",    "Enviar cotización",     "Alta"),
+    ("Reunión agendada",     "C9A0DC", "row",  "activo",    "Preparar reunión",      "Alta"),
+    ("Prospectar después",   "FFFF99", "row",  "pendiente", "Recontactar en fecha",  "Media"),
+    ("Respondió interesado", "C6EFCE", "row",  "activo",    "Dar seguimiento",       "Alta"),
+    ("No interesado",        "FFC000", "row",  "cerrado",   "Cierre amable",         "Baja"),
+    ("Blacklist",            "808080", "row",  "bloqueo",   "No contactar",          "Baja"),
+    ("Follow Up pendiente",  "FFF2CC", "cell", "pendiente", "Enviar follow-up",      "Media"),
+    ("Mensaje enviado",      "DDEBF7", "cell", "activo",    "Esperar respuesta",     "Media"),
+    ("Nuevo lead",           "FFFFFF", "cell", "activo",    "Mensaje inicial",       "Media"),
+]
+
+# Resultados posibles de una cold call.
+COLD_CALL_RESULTS = [
+    "No contestó", "Interesado", "Pidió información", "RFQ", "Reunión agendada",
+    "Contactar después", "Won", "Lost", "Blacklist",
+]
 SCHEDULED_HEADERS = [
     "Schedule ID", "Lead ID", "Full Name", "Company", "Seniority Level", "Industry",
     "Channel", "Message", "Scheduled DateTime", "Status", "Sent DateTime",
@@ -177,6 +219,11 @@ CANON_SYNONYMS = {
     "Priority": ["priority", "prioridad"],
     "Recommended Channel": ["recommended channel", "canal recomendado", "channel"],
     "Current Stage": ["current stage", "stage", "etapa", "fase", "etapa actual"],
+    "Follow Up Step": ["follow up step", "fu step", "paso follow up"],
+    "Follow Up Channel": ["follow up channel", "canal follow up", "fu channel"],
+    "Next Follow Up Time": ["next follow up time", "hora follow up", "fu time"],
+    "Follow Up Reason": ["follow up reason", "motivo follow up", "razon reprogramacion"],
+    "Owner/User": ["owner/user", "owner", "user", "usuario", "responsable"],
     "First Contact": ["first contact", "primer contacto"],
     "Last Contact": ["last contact", "ultimo contacto", "último contacto"],
     "Next Follow-up": ["next follow-up", "next followup", "proximo seguimiento"],
@@ -197,12 +244,70 @@ SENT = "Enviado"          # marca para etapas LinkedIn/Email
 DONE = "Hecho"            # marca para Cold Call (dentro de la lista de validación)
 
 # Estados de Outcome Status que bloquean / pausan envíos.
-OUTCOME_BLOCK = {"Blacklist", "Won", "Lost"}     # bloqueo duro (nunca / no más)
+OUTCOME_BLOCK = {"Blacklist", "Won", "Lost", "Do Not Contact", "Email Bounced",
+                 "Blocked"}     # bloqueo duro (nunca / no más)
 OUTCOME_PAUSE = {"Prospectar Después", "Respondió"}  # pausa hasta decisión/fecha
 
 # Valores nuevos de Outcome Status que la app puede escribir (extienden la validación).
 OUTCOME_VALUES = ["Active", "Blacklist", "Prospectar Después", "Won", "Lost",
-                  "Respondió", "Meeting", "RFQ", "Quote"]
+                  "Respondió", "Meeting", "RFQ", "Quote",
+                  "Do Not Contact", "Email Bounced", "Blocked"]
+
+# --- Configuración clave-valor (Notification_Settings / Workflow_Config) ----
+NOTIF_SETTINGS_SHEET = "Notification_Settings"
+WORKFLOW_SHEET = "Workflow_Config"
+KV_HEADERS = ["Setting", "Value"]
+NOTIF_DEFAULTS = {"no_response_hours": "48"}
+WORKFLOW_DEFAULTS = {
+    "fu1_to_fu2_hours": "72", "fu2_to_fu3_hours": "72", "fu3_to_fu4_hours": "96",
+    "max_followups": "3", "default_channel": "LinkedIn",
+    "allowed_hours": "09:00-18:00", "allowed_days": "Lun,Mar,Mie,Jue,Vie",
+    "message_interval_min": "45", "email_daily_cap": "50",
+}
+
+# --- Campañas (workflow asistido) --------------------------------------------
+CAMPAIGNS_SHEET = "Campaigns"
+CAMPAIGN_HEADERS = ["Campaign ID", "Name", "Channel", "Industry", "Step",
+                    "Status", "Total Leads", "Sent", "Scheduled Date",
+                    "Created", "Notes", "Lead Keys"]
+CAMPAIGN_STATUS = ["Activa", "Pendiente", "Pausada", "Terminada"]
+
+# --- Gmail Campaigns ----------------------------------------------------------
+GMAIL_ACCOUNTS_SHEET = "Gmail_Accounts"
+GMAIL_ACCOUNTS_HEADERS = ["Email", "Connected At", "Last Sync", "Status"]
+GMAIL_CAMPAIGNS_SHEET = "Gmail_Campaigns"
+GMAIL_CAMPAIGNS_HEADERS = ["Campaign ID", "Name", "Sender Email", "Channel",
+                           "Created", "User", "Status", "Total Leads", "Subject"]
+GMAIL_CAMPAIGN_LEADS_SHEET = "Gmail_Campaign_Leads"
+GMAIL_CAMPAIGN_LEADS_HEADERS = ["Campaign ID", "Lead ID", "Full Name", "Email",
+                                "Company", "Subject", "Message", "Status",
+                                "Scheduled DateTime", "Sent DateTime"]
+GMAIL_FOLLOWUPS_SHEET = "Gmail_Follow_Ups"
+GMAIL_FOLLOWUPS_HEADERS = ["Timestamp", "Lead ID", "Full Name", "Email", "Step",
+                           "Subject", "Message", "Status", "Scheduled DateTime",
+                           "Note"]
+# Opciones rápidas de reprogramación (etiqueta -> horas; None = personalizada).
+QUICK_RESCHEDULE = [("Mañana", 24), ("En 24 horas", 24), ("En 48 horas", 48),
+                    ("En 72 horas", 72), ("En 7 días", 168),
+                    ("Fecha personalizada", None)]
+
+# Estados de la cola LinkedIn asistida (Scheduled_Messages, canal LinkedIn).
+LINKEDIN_QUEUE_STATUS = ["Draft", "Ready to send", "Manually sent",
+                         "Responded", "Follow Up needed"]
+
+# Palabras clave para clasificar respuestas de Gmail.
+REPLY_KEYWORDS = {
+    "bounce": ["mailer-daemon", "postmaster", "delivery status", "undeliver",
+               "delivery failed", "returned mail", "delivery incomplete"],
+    "blacklist": ["unsubscribe", "no contactar", "remove me", "stop emailing",
+                  "baja de la lista", "do not contact"],
+    "not_interested": ["not interested", "no me interesa", "no estamos interesados",
+                       "no gracias", "not a fit", "no necesitamos"],
+    "rfq": ["cotiza", "quote", "rfq", "pricing", "precio", "presupuesto"],
+    "meeting": ["reunion", "reunión", "meeting", "call", "llamada", "agenda", "demo"],
+    "later": ["mas adelante", "más adelante", "later", "next quarter", "en unos meses",
+              "contactar despues", "contactar después", "q3", "q4"],
+}
 
 # Reglas de color de fila por Outcome Status (existentes + nuevas).
 # Las 4 primeras YA existen en el archivo; se conservan idénticas.
@@ -304,10 +409,12 @@ class StateStore:
     def put(self, k, st: LeadState):
         self._d[k] = asdict(st)
 
-    def add_log(self, k, channel, step, action, result="", notes="", message=""):
+    def add_log(self, k, channel, step, action, result="", notes="", message="",
+                ts=None):
         st = self.get(k)
         st.log.append({
-            "ts": dt.datetime.now().isoformat(timespec="seconds"),
+            "ts": (ts or dt.datetime.now()).isoformat(timespec="seconds")
+                  if not isinstance(ts, str) else ts,
             "channel": channel, "step": step, "action": action,
             "result": result, "notes": notes, "message": message,
         })
@@ -475,7 +582,8 @@ class CRM:
         if not self._cell(self.wb[lead.sheet], self.maps[lead.sheet], lead.row, "First Contact"):
             self._set(lead, "First Contact", when.date().isoformat())
         res = result or mark
-        self.state.add_log(lead.key, channel, step, "sent", result=res, message=message)
+        self.state.add_log(lead.key, channel, step, "sent", result=res,
+                           message=message, ts=when)
         self.append_activity(lead, channel, step, message, res, when)
         return mark
 
@@ -653,6 +761,9 @@ class CRM:
                     return lead
         return None
 
+    def schedule_next(self, lead: Lead, channel, step_index, gap_days):
+        """Programa el siguiente paso del canal a gap_days, si existe."""
+        steps = CHANNEL_STEPS[channel]
         if step_index + 1 >= len(steps):
             return None
         nxt = steps[step_index + 1]
@@ -1535,6 +1646,230 @@ class CRM:
                            result=summary, notes=notes or "")
         return summary
 
+    # ---- reprogramación de follow-ups + historial ----------------------- #
+
+    def _ensure_history_sheet(self):
+        if FOLLOWUP_HISTORY_SHEET not in self.wb.sheetnames:
+            ws = self.wb.create_sheet(FOLLOWUP_HISTORY_SHEET)
+            ws.append(FU_HISTORY_HEADERS)
+            for c in ws[1]:
+                c.font = Font(bold=True, color="FFFFFF")
+                c.fill = PatternFill("solid", fgColor="1F4E78")
+            ws.freeze_panes = "A2"
+        return self.wb[FOLLOWUP_HISTORY_SHEET]
+
+    def log_followup_history(self, lead, prev_date, new_date, prev_channel,
+                             new_channel, reason="", notes="", user="",
+                             status="Reprogramado", when=None):
+        when = when or dt.datetime.now()
+        ws = self._ensure_history_sheet()
+        ws.append([when.isoformat(timespec="seconds"), lead.key, lead.full_name,
+                   lead.company, str(prev_date or ""), str(new_date or ""),
+                   str(prev_channel or ""), str(new_channel or ""), reason, notes,
+                   user, status])
+
+    def reschedule_followup(self, lead, new_date, new_time="", channel=None,
+                            reason="", notes=None, user="", fu_step=None,
+                            stage=None, priority=None):
+        """Reprograma el próximo follow-up de un lead: actualiza la fila (fecha,
+        hora, canal, motivo, owner...), re-sincroniza el scheduler interno,
+        registra en Follow_Up_History y Activity_Log, y crea notificación."""
+        self.ensure_columns(lead.sheet, RESCHEDULE_COLUMNS + CLASSIFY_COLUMNS)
+        g = lambda c: self._cell(self.wb[lead.sheet], self.maps[lead.sheet], lead.row, c)
+        prev_date = g("Next Follow-up")
+        prev_channel = g("Follow Up Channel") or self.lead_channel(lead)
+
+        # escribir campos en la fila del lead (solo lo provisto)
+        self._set(lead, "Next Follow-up", new_date)
+        if new_time:
+            self._set(lead, "Next Follow Up Time", new_time)
+        if channel:
+            self._set(lead, "Follow Up Channel", channel)
+        if reason:
+            self._set(lead, "Follow Up Reason", reason)
+        if notes:
+            self._set(lead, "Notes", notes)
+        if user:
+            self._set(lead, "Owner/User", user)
+        if fu_step:
+            self._set(lead, "Follow Up Step", fu_step)
+        if stage:
+            self._set(lead, "Current Stage", stage)
+        if priority:
+            self._set(lead, "Priority", priority)
+
+        # re-sincronizar scheduler interno: mover la programación pendiente
+        st = self.state.get(lead.key)
+        when_iso = f"{new_date}T{new_time or '09:00'}:00" if len(str(new_date)) == 10 \
+            else str(new_date)
+        seq = {"Gmail": "Email", "Otro": "LinkedIn"}.get(channel, channel) \
+            if channel else None
+        target_step = fu_step
+        if not target_step:
+            if st.scheduled:  # mover la más próxima
+                target_step = sorted(st.scheduled.items(), key=lambda kv: kv[1])[0][0]
+            elif seq in CHANNEL_STEPS:
+                for s in CHANNEL_STEPS[seq]:
+                    if not _is_marked(lead.stage_values.get(s)):
+                        target_step = s
+                        break
+        if target_step:
+            st.scheduled[target_step] = when_iso
+            self.state.put(lead.key, st)
+
+        self.log_followup_history(lead, prev_date, f"{new_date} {new_time}".strip(),
+                                  prev_channel, channel or prev_channel,
+                                  reason=reason, notes=notes or "", user=user)
+        self.state.add_log(lead.key, channel or "-", target_step or "-",
+                           "reschedule", result=f"{new_date} {new_time}".strip(),
+                           notes=reason or "")
+        lead2 = self.read_lead(lead.sheet, lead.row)
+        self.add_notification(lead2, "Follow-up reprogramado",
+                              f"→ {new_date} {new_time} por {channel or prev_channel}"
+                              + (f" · {reason}" if reason else ""),
+                              channel or "-")
+        return target_step, when_iso
+
+    # ---- registro de cold call ------------------------------------------ #
+
+    def register_cold_call(self, lead, call_date=None, result="No contestó",
+                           note="", next_action="", next_date=None, user=""):
+        """Registra una llamada realizada (manual): marca la siguiente celda
+        Cold Call N, aplica el resultado y agenda el próximo contacto si se dio."""
+        when = dt.datetime.now() if not call_date else \
+            dt.datetime.fromisoformat(f"{call_date}T12:00:00")
+        nxt_cell = None
+        for s in CHANNEL_STEPS["Cold Call"]:
+            if not _is_marked(lead.stage_values.get(s)):
+                nxt_cell = s
+                break
+        if nxt_cell:
+            self.mark_sent(lead, "Llamada", nxt_cell, message=note or result,
+                           when=when, result=result)
+        # aplicar el resultado
+        if result == "Won":
+            self.set_outcome(lead, "Won", note=note or None)
+        elif result == "Lost":
+            self.set_outcome(lead, "Lost", note=note or None)
+        elif result == "Blacklist":
+            self.set_outcome(lead, "Blacklist", note=note or None)
+        elif result == "RFQ":
+            self.mark_stage(lead, "RFQ")
+        elif result == "Reunión agendada":
+            self.mark_stage(lead, "Meeting")
+        elif result == "Contactar después":
+            self.set_outcome(lead, "Prospectar Después",
+                             recontact_date=next_date, note=note or None)
+        # próximo contacto (si se dio y el lead sigue vivo)
+        if next_date and result in ("No contestó", "Interesado", "Pidió información"):
+            self.reschedule_followup(lead, next_date, channel="Cold Call",
+                                     reason=f"Tras llamada: {result}",
+                                     notes=next_action or None, user=user)
+        lead2 = self.read_lead(lead.sheet, lead.row)
+        self.add_notification(lead2, "Cold call registrada",
+                              f"{result}" + (f" · {note[:80]}" if note else ""),
+                              "Cold Call")
+        return result
+
+    # ---- configuración de colores por estado ---------------------------- #
+
+    def _ensure_color_sheet(self, seed=True):
+        if STATE_COLOR_SHEET not in self.wb.sheetnames:
+            ws = self.wb.create_sheet(STATE_COLOR_SHEET)
+            ws.append(STATE_COLOR_HEADERS)
+            for c in ws[1]:
+                c.font = Font(bold=True, color="FFFFFF")
+                c.fill = PatternFill("solid", fgColor="1F4E78")
+            ws.freeze_panes = "A2"
+            if seed:
+                for row in DEFAULT_STATE_COLORS:
+                    ws.append(list(row) + ["Sí"])
+        return self.wb[STATE_COLOR_SHEET]
+
+    def read_state_colors(self):
+        """Lee la config de colores. Devuelve dict: state -> dict(campos + _row)."""
+        ws = self._ensure_color_sheet()
+        out = {}
+        for r in range(2, ws.max_row + 1):
+            vals = [ws.cell(r, c).value for c in range(1, len(STATE_COLOR_HEADERS) + 1)]
+            if not vals[0]:
+                continue
+            d = dict(zip(STATE_COLOR_HEADERS, vals))
+            d["_row"] = r
+            out[str(d["State"])] = d
+        return out
+
+    def upsert_state_color(self, state, color, scope="row", category="activo",
+                           action="", priority="Media", active=True):
+        """Crea o actualiza un estado (incluye estados personalizados)."""
+        ws = self._ensure_color_sheet()
+        cfg = self.read_state_colors()
+        row_vals = [state, str(color).lstrip("#").upper(), scope, category,
+                    action, priority, "Sí" if active else "No"]
+        if state in cfg:
+            r = cfg[state]["_row"]
+            for i, v in enumerate(row_vals, 1):
+                ws.cell(row=r, column=i).value = v
+        else:
+            ws.append(row_vals)
+        return state
+
+    def resolve_display_state(self, lead, st=None):
+        """Estado 'visual' del lead para pintar: usa Current Stage si está en la
+        config; si no, deriva del embudo/outcome hacia los estados estándar."""
+        cfg = self.read_state_colors()
+        cur = self._cell(self.wb[lead.sheet], self.maps[lead.sheet],
+                         lead.row, "Current Stage")
+        if cur and str(cur) in cfg:
+            return str(cur)
+        stg = self.lead_stage(lead, st)
+        mapping = {
+            "Won": "Won", "Lost": "Lost", "Blacklist": "Blacklist",
+            "Prospectar después": "Prospectar después",
+            "RFQ": "RFQ", "Quote": "RFQ", "Meeting": "Reunión agendada",
+            "Respondió": "Respondió interesado",
+        }
+        if stg in mapping:
+            return mapping[stg]
+        sst = st or self.state.get(lead.key)
+        if sst.scheduled:
+            return "Follow Up pendiente"
+        touched = any(_is_marked(lead.stage_values.get(s))
+                      for steps in CHANNEL_STEPS.values() for s in steps)
+        return "Mensaje enviado" if touched else "Nuevo lead"
+
+    def apply_state_colors(self, remove_legacy_cf=False):
+        """Pinta filas/celdas del Excel según la config (openpyxl PatternFill).
+        'row' = toda la fila; 'cell' = solo la celda Current Stage. Blanco/
+        FFFFFF = limpiar. Si remove_legacy_cf, elimina el formato condicional
+        heredado para que el pintado estático sea la única fuente visual."""
+        cfg = self.read_state_colors()
+        painted = 0
+        for sheet in self.maps:
+            self.ensure_columns(sheet, CLASSIFY_COLUMNS)
+            ws, cmap = self.wb[sheet], self.maps[sheet]
+            if remove_legacy_cf:
+                ws.conditional_formatting = ConditionalFormattingList()
+            stage_col = cmap.idx("Current Stage")
+            for lead in self.all_leads(sheet):
+                state = self.resolve_display_state(lead)
+                c = cfg.get(state)
+                if not c or str(c.get("Active", "Sí")).lower().startswith("n"):
+                    continue
+                color = str(c["Color"]).lstrip("#").upper()
+                clear = color in ("FFFFFF", "")
+                fill = PatternFill() if clear else PatternFill("solid", fgColor=color)
+                if str(c.get("Scope", "row")).lower() == "row":
+                    for col in range(1, ws.max_column + 1):
+                        ws.cell(row=lead.row, column=col).fill = fill
+                else:
+                    ws.cell(row=lead.row, column=stage_col).fill = fill
+                # reflejar el estado visual en Current Stage si estaba vacío
+                if not ws.cell(row=lead.row, column=stage_col).value:
+                    ws.cell(row=lead.row, column=stage_col).value = state
+                painted += 1
+        return painted
+
     def set_manual_state(self, lead, state, channel=None, note=None,
                          recontact_date=None):
         """Aplica cualquiera de los 12 estados manuales. Los Outcome pintan fila;
@@ -1627,6 +1962,548 @@ class CRM:
                 "Tus cambios siguen en memoria; el backup previo está intacto.")
         except OSError as e:
             return None, bkp, f"No pude guardar el archivo: {e}"
+
+    # ===================================================================== #
+    # Configuración clave-valor (Notification_Settings / Workflow_Config)
+    # ===================================================================== #
+
+    def _ensure_kv_sheet(self, name, defaults):
+        if name not in self.wb.sheetnames:
+            ws = self.wb.create_sheet(name)
+            ws.append(KV_HEADERS)
+            for c in ws[1]:
+                c.font = Font(bold=True, color="FFFFFF")
+                c.fill = PatternFill("solid", fgColor="1F4E78")
+            for k, v in defaults.items():
+                ws.append([k, v])
+        return self.wb[name]
+
+    def read_kv(self, name, defaults):
+        ws = self._ensure_kv_sheet(name, defaults)
+        out = dict(defaults)
+        for r in range(2, ws.max_row + 1):
+            k, v = ws.cell(r, 1).value, ws.cell(r, 2).value
+            if k:
+                out[str(k)] = str(v) if v is not None else ""
+        return out
+
+    def set_kv(self, name, key, value, defaults=None):
+        ws = self._ensure_kv_sheet(name, defaults or {})
+        for r in range(2, ws.max_row + 1):
+            if str(ws.cell(r, 1).value) == key:
+                ws.cell(r, 2).value = str(value)
+                return
+        ws.append([key, str(value)])
+
+    def notif_settings(self):
+        return self.read_kv(NOTIF_SETTINGS_SHEET, NOTIF_DEFAULTS)
+
+    def workflow_config(self):
+        return self.read_kv(WORKFLOW_SHEET, WORKFLOW_DEFAULTS)
+
+    def fu_gap_hours(self, step_index):
+        """Horas configuradas entre el paso step_index y el siguiente."""
+        cfg = self.workflow_config()
+        keys = ["fu1_to_fu2_hours", "fu2_to_fu3_hours", "fu3_to_fu4_hours"]
+        k = keys[min(step_index, len(keys) - 1)]
+        try:
+            return float(cfg.get(k, 72))
+        except ValueError:
+            return 72.0
+
+    # ===================================================================== #
+    # Alertas configurables de no-respuesta
+    # ===================================================================== #
+
+    def scan_no_response(self):
+        """Genera alertas para leads contactados que no respondieron tras las
+        horas configuradas, follow-ups vencidos y leads a reprogramar/descartar.
+        No duplica alertas del mismo tipo por lead. Devuelve cuántas creó."""
+        hours = float(self.notif_settings().get("no_response_hours", 48))
+        now = dt.datetime.now()
+        existing = {(n.get("Lead"), n.get("Tipo de evento"))
+                    for n in self.read_notifications()}
+        created = 0
+        for sheet in self.maps:
+            for lead in self.all_leads(sheet):
+                st = self.state.get(lead.key)
+                if self._is_blocked(lead, st):
+                    continue
+                lc = self._cell(self.wb[sheet], self.maps[sheet], lead.row,
+                                "Last Contact")
+                if not lc:
+                    continue
+                try:
+                    last = dt.datetime.fromisoformat(str(lc)[:10])
+                except ValueError:
+                    continue
+                elapsed_h = (now - last).total_seconds() / 3600
+                if elapsed_h < hours:
+                    continue
+                # ¿qué alerta corresponde?
+                fu_sent = sum(_is_marked(lead.stage_values.get(s))
+                              for s in CHANNEL_STEPS["LinkedIn"])
+                maxfu = int(float(self.workflow_config().get("max_followups", 3)))
+                if fu_sent > maxfu:
+                    ev, summ = "Lead debe descartarse", \
+                        f"{lead.full_name}: {fu_sent} toques sin respuesta"
+                elif st.scheduled and any(
+                        dt.datetime.fromisoformat(v).date() < now.date()
+                        for v in st.scheduled.values()):
+                    ev, summ = "Follow-up vencido", \
+                        f"{lead.full_name}: follow-up programado ya venció"
+                elif fu_sent >= 1:
+                    ev = f"Campaña lista para Follow Up {fu_sent + 1}"
+                    summ = f"{lead.full_name}: {elapsed_h:.0f}h sin respuesta " \
+                           f"tras Follow Up {fu_sent}"
+                else:
+                    ev, summ = "Lead sin respuesta", \
+                        f"{lead.full_name}: {elapsed_h:.0f}h sin respuesta"
+                if (lead.full_name, ev) in existing:
+                    continue
+                self.add_notification(lead, ev, summ, self.lead_channel(lead, st))
+                created += 1
+        return created
+
+    # ===================================================================== #
+    # Campañas (workflow asistido LinkedIn / multicanal)
+    # ===================================================================== #
+
+    def _ensure_campaigns_sheet(self):
+        if CAMPAIGNS_SHEET not in self.wb.sheetnames:
+            ws = self.wb.create_sheet(CAMPAIGNS_SHEET)
+            ws.append(CAMPAIGN_HEADERS)
+            for c in ws[1]:
+                c.font = Font(bold=True, color="FFFFFF")
+                c.fill = PatternFill("solid", fgColor="1F4E78")
+            ws.freeze_panes = "A2"
+        return self.wb[CAMPAIGNS_SHEET]
+
+    def create_campaign(self, name, channel, industry, leads, step_index=0,
+                        status="Activa", scheduled_date=None, notes=""):
+        """Registra una campaña con su lista de leads (por key)."""
+        ws = self._ensure_campaigns_sheet()
+        cid = f"CMP-{ws.max_row:04d}"
+        keys = "|".join(l.key for l in leads)
+        ws.append([cid, name, channel, industry, step_index, status, len(leads), 0,
+                   scheduled_date or dt.date.today().isoformat(),
+                   dt.datetime.now().isoformat(timespec="seconds"), notes, keys])
+        self.state.add_log("__campaigns__", channel, f"step{step_index}",
+                           "campaign_created", result=cid, notes=name)
+        return cid
+
+    def read_campaigns(self, status=None):
+        if CAMPAIGNS_SHEET not in self.wb.sheetnames:
+            return []
+        ws = self.wb[CAMPAIGNS_SHEET]
+        out = []
+        for r in range(2, ws.max_row + 1):
+            vals = [ws.cell(r, c).value for c in range(1, len(CAMPAIGN_HEADERS) + 1)]
+            if not vals[0]:
+                continue
+            d = dict(zip(CAMPAIGN_HEADERS, vals))
+            d["_row"] = r
+            if status and d.get("Status") != status:
+                continue
+            out.append(d)
+        return out
+
+    def _campaign_step_name(self, camp):
+        idx = int(camp.get("Step") or 0)
+        ch = str(camp.get("Channel") or "LinkedIn")
+        seq = {"Gmail": "Email", "Email": "Email", "Cold Call": "Cold Call"} \
+            .get(ch, "LinkedIn")
+        steps = CHANNEL_STEPS[seq]
+        return steps[min(idx, len(steps) - 1)], seq
+
+    def campaign_pending_leads(self, camp):
+        """Leads de la campaña que aún no reciben el paso actual y siguen vivos
+        (excluye respondidos, descartados, blacklist, Won...)."""
+        step, _seq = self._campaign_step_name(camp)
+        keys = str(camp.get("Lead Keys") or "").split("|")
+        pend = []
+        for k in keys:
+            lead = self._find_lead_by_key(k)
+            if lead is None:
+                continue
+            st = self.state.get(lead.key)
+            if self._is_blocked(lead, st):
+                continue
+            if _is_marked(lead.stage_values.get(step)):
+                continue
+            pend.append(lead)
+        return pend
+
+    def next_pending_lead(self, camp):
+        pend = self.campaign_pending_leads(camp)
+        return pend[0] if pend else None
+
+    def mark_campaign_sent(self, camp, lead, message="", user=""):
+        """Confirmación manual: marca el paso actual como enviado, calcula el
+        siguiente follow-up con la config del workflow, actualiza contadores y,
+        si la campaña terminó, crea automáticamente la de Follow Up N+1."""
+        step, seq = self._campaign_step_name(camp)
+        self.mark_sent(lead, camp.get("Channel") or seq, step, message=message)
+        # siguiente follow-up con las horas configuradas
+        idx = int(camp.get("Step") or 0)
+        gap_h = self.fu_gap_hours(idx)
+        when = dt.datetime.now() + dt.timedelta(hours=gap_h)
+        steps = CHANNEL_STEPS[seq]
+        if idx + 1 < len(steps):
+            st = self.state.get(lead.key)
+            st.scheduled[steps[idx + 1]] = when.isoformat(timespec="seconds")
+            self.state.put(lead.key, st)
+            self._set(lead, "Next Follow-up", when.date().isoformat())
+        if user:
+            self._set(lead, "Owner/User", user)
+        # contador de la campaña
+        ws = self.wb[CAMPAIGNS_SHEET]
+        r = camp["_row"]
+        sent = int(ws.cell(r, 8).value or 0) + 1
+        ws.cell(r, 8).value = sent
+        # ¿terminó? (campaign_pending_leads ya excluye a este lead: su celda
+        # de etapa acaba de marcarse en mark_sent)
+        remaining = len(self.campaign_pending_leads(camp))
+        if remaining <= 0 and str(ws.cell(r, 6).value) != "Terminada":
+            ws.cell(r, 6).value = "Terminada"
+            self._auto_create_followup_campaign(camp, when)
+        return sent, when
+
+    def _auto_create_followup_campaign(self, camp, scheduled_dt):
+        """Al terminar una campaña, crea 'Follow Up N+1 - <nombre>' con los
+        mismos leads menos respondidos/descartados/blacklist/Won."""
+        idx = int(camp.get("Step") or 0)
+        _step, seq = self._campaign_step_name(camp)
+        steps = CHANNEL_STEPS[seq]
+        maxfu = int(float(self.workflow_config().get("max_followups", 3)))
+        if idx + 1 >= len(steps) or idx + 1 > maxfu:
+            return None
+        keys = str(camp.get("Lead Keys") or "").split("|")
+        survivors = []
+        for k in keys:
+            lead = self._find_lead_by_key(k)
+            if lead is None:
+                continue
+            st = self.state.get(lead.key)
+            if self._is_blocked(lead, st):     # respondió/blacklist/won/lost/DNC
+                continue
+            survivors.append(lead)
+        if not survivors:
+            return None
+        base = str(camp.get("Name") or "").split(" - ", 1)[-1] \
+            if str(camp.get("Name") or "").startswith("Follow Up") \
+            else str(camp.get("Name") or "")
+        name = f"Follow Up {idx + 2} - {base}"
+        if any(str(c.get("Name")) == name for c in self.read_campaigns()):
+            return None  # ya existe: no duplicar
+        cid = self.create_campaign(name, camp.get("Channel"), camp.get("Industry"),
+                                   survivors, step_index=idx + 1, status="Pendiente",
+                                   scheduled_date=scheduled_dt.date().isoformat())
+        # notificación-recordatorio
+        fake = survivors[0]
+        self.add_notification(fake, "Campaña lista",
+                              f"Tienes una campaña lista: {name} · "
+                              f"{len(survivors)} leads pendientes · "
+                              f"{camp.get('Channel')}", camp.get("Channel") or "-")
+        return cid
+
+    def reschedule_campaign(self, camp, new_date):
+        """Reprograma la fecha de una campaña Pendiente/Pausada."""
+        ws = self.wb[CAMPAIGNS_SHEET]
+        ws.cell(camp["_row"], 9).value = str(new_date)
+        ws.cell(camp["_row"], 6).value = "Pendiente"
+        self.state.add_log("__campaigns__", camp.get("Channel") or "-", "-",
+                           "campaign_rescheduled", result=str(new_date),
+                           notes=camp.get("Name") or "")
+
+    def scan_campaign_reminders(self):
+        """Notifica campañas Pendientes cuya fecha ya llegó."""
+        today = dt.date.today()
+        existing = {n.get("Mensaje/Resumen") for n in self.read_notifications()
+                    if n.get("Tipo de evento") == "Campaña lista"}
+        created = 0
+        for camp in self.read_campaigns(status="Pendiente"):
+            try:
+                d = dt.date.fromisoformat(str(camp.get("Scheduled Date"))[:10])
+            except ValueError:
+                continue
+            if d > today:
+                continue
+            pend = self.campaign_pending_leads(camp)
+            if not pend:
+                continue
+            summ = (f"Tienes una campaña lista: {camp.get('Name')} · "
+                    f"{len(pend)} leads pendientes · {camp.get('Channel')}")
+            if summ in existing:
+                continue
+            self.add_notification(pend[0], "Campaña lista", summ,
+                                  camp.get("Channel") or "-")
+            created += 1
+        return created
+
+    # ===================================================================== #
+    # Email: clasificación de respuestas y procesamiento de cola
+    # ===================================================================== #
+
+    @staticmethod
+    def classify_email_reply(from_email, subject, snippet):
+        """Clasifica una respuesta de Gmail por palabras clave. Devuelve una de:
+        bounce, blacklist, not_interested, rfq, meeting, later, interested."""
+        blob = _norm(f"{from_email} {subject} {snippet}")
+        for cat in ("bounce", "blacklist", "not_interested", "rfq", "meeting",
+                    "later"):
+            if any(_norm(k) in blob for k in REPLY_KEYWORDS[cat]):
+                return cat
+        return "interested"
+
+    def handle_email_event(self, lead, category, message="", recontact_date=None):
+        """Aplica el efecto de una respuesta/rebote clasificado y notifica.
+        Siempre cancela los mensajes programados del lead cuando corresponde."""
+        label = {
+            "bounce": "Email Bounced", "blacklist": "Blacklist",
+            "not_interested": "Lost", "later": "Prospectar Después",
+        }.get(category)
+        if category == "bounce":
+            self._set(lead, "Outcome Status", "Email Bounced")
+            self.cancel_scheduled_for_lead(lead)
+            self.state.add_log(lead.key, "Email", "-", "bounce", result="Email Bounced")
+        elif category in ("blacklist", "not_interested"):
+            self.set_outcome(lead, label, note=message[:120] or None)
+            self.cancel_scheduled_for_lead(lead)
+        elif category == "later":
+            self.set_outcome(lead, "Prospectar Después",
+                             recontact_date=recontact_date, note=message[:120] or None)
+            self.cancel_scheduled_for_lead(lead)
+        elif category == "rfq":
+            self.register_response(lead, "Email", message)
+            self.mark_stage(lead, "RFQ")
+        elif category == "meeting":
+            self.register_response(lead, "Email", message)
+            self.mark_stage(lead, "Meeting")
+        else:  # interested
+            self.register_response(lead, "Email", message)
+        lead2 = self.read_lead(lead.sheet, lead.row)
+        self.add_notification(lead2, f"Email: {category}",
+                              (message or category)[:120], "Email")
+        return category
+
+    def cancel_scheduled_for_lead(self, lead):
+        """Cancela todos los mensajes Scheduled/Draft del lead y limpia su
+        scheduler interno (detiene follow-ups automáticos)."""
+        n = 0
+        for s in self.read_scheduled():
+            if s.get("Lead ID") == lead.key and s.get("Status") in ("Scheduled",
+                                                                    "Draft",
+                                                                    "Ready to send"):
+                ws = self.wb[SCHEDULED_SHEET]
+                ws.cell(s["_row"], SCHEDULED_HEADERS.index("Status") + 1).value = \
+                    "Cancelled"
+                n += 1
+        st = self.state.get(lead.key)
+        st.scheduled = {}
+        self.state.put(lead.key, st)
+        return n
+
+    def emails_sent_today(self):
+        today = dt.date.today().isoformat()
+        return sum(1 for r in self._read_activity_log()
+                   if str(r[4]) == today and str(r[5]) in ("Email", "Gmail"))
+
+    def process_due_emails(self, send_fn, daily_cap=None, now=None):
+        """Procesa la cola de emails vencidos (Status=Scheduled, canal Email/
+        Gmail, fecha <= ahora). send_fn(to, subject, body) hace el envío real
+        (inyectable: en la app es Gmail API; en pruebas, un mock). Respeta el
+        tope diario, salta leads bloqueados (cancelándolos) y evita duplicados
+        marcando Sent antes de continuar. Devuelve (enviados, saltados, motivo)."""
+        now = now or dt.datetime.now()
+        cap = daily_cap if daily_cap is not None else \
+            int(float(self.workflow_config().get("email_daily_cap", 50)))
+        already = self.emails_sent_today()
+        sent = skipped = 0
+        for s in self.read_scheduled(status="Scheduled"):
+            if str(s.get("Channel")) not in ("Email", "Gmail"):
+                continue
+            try:
+                when = dt.datetime.fromisoformat(str(s.get("Scheduled DateTime"))[:19])
+            except ValueError:
+                continue
+            if when > now:
+                continue
+            if already + sent >= cap:
+                return sent, skipped, f"Tope diario alcanzado ({cap})"
+            lead = self._find_lead_by_key(s.get("Lead ID"))
+            if lead is None:
+                skipped += 1
+                continue
+            st = self.state.get(lead.key)
+            if self._is_blocked(lead, st):      # respondió / blacklist / DNC...
+                self.cancel_scheduled_for_lead(lead)
+                skipped += 1
+                continue
+            if not lead.email:
+                skipped += 1
+                continue
+            subject = (s.get("Notes") or "").split("|SUBJ|")[-1] \
+                if "|SUBJ|" in str(s.get("Notes") or "") else \
+                f"Seguimiento — {lead.company or 'contacto'}"
+            # marcar Sent ANTES del envío real evita dobles si algo re-entra
+            self.update_schedule_status(s["_row"], "Sent", when=now)
+            try:
+                send_fn(lead.email, subject, s.get("Message") or "")
+            except Exception as e:
+                # revertir a Scheduled si el envío falló
+                ws = self.wb[SCHEDULED_SHEET]
+                ws.cell(s["_row"], SCHEDULED_HEADERS.index("Status") + 1).value = \
+                    "Scheduled"
+                ws.cell(s["_row"],
+                        SCHEDULED_HEADERS.index("Sent DateTime") + 1).value = ""
+                skipped += 1
+                self.state.add_log(lead.key, "Email", s.get("Follow Up Step") or "-",
+                                   "send_error", result=str(e)[:80])
+                continue
+            stage = "Follow Up sent" if str(s.get("Follow Up Step") or "") \
+                .startswith(("Email 2", "Email 3", "Email 4", "Email 5")) \
+                else "Email sent"
+            self._set(lead, "Current Stage", stage)
+            sent += 1
+        return sent, skipped, None
+
+    # ===================================================================== #
+    # Gmail Campaigns (hojas, cuentas, personalización, Follow Up 1)
+    # ===================================================================== #
+
+    def _ensure_headers_sheet(self, name, headers):
+        if name not in self.wb.sheetnames:
+            ws = self.wb.create_sheet(name)
+            ws.append(headers)
+            for c in ws[1]:
+                c.font = Font(bold=True, color="FFFFFF")
+                c.fill = PatternFill("solid", fgColor="1F4E78")
+            ws.freeze_panes = "A2"
+        return self.wb[name]
+
+    def ensure_gmail_sheets(self):
+        """Crea si no existen todas las hojas del módulo Gmail (y las comunes)."""
+        self._ensure_headers_sheet(GMAIL_ACCOUNTS_SHEET, GMAIL_ACCOUNTS_HEADERS)
+        self._ensure_headers_sheet(GMAIL_CAMPAIGNS_SHEET, GMAIL_CAMPAIGNS_HEADERS)
+        self._ensure_headers_sheet(GMAIL_CAMPAIGN_LEADS_SHEET,
+                                   GMAIL_CAMPAIGN_LEADS_HEADERS)
+        self._ensure_headers_sheet(GMAIL_FOLLOWUPS_SHEET, GMAIL_FOLLOWUPS_HEADERS)
+        self._ensure_scheduled_sheet(); self._ensure_history_sheet()
+        self._ensure_notifications_sheet(); self._ensure_activity_sheet()
+
+    def save_gmail_account(self, email, status="Conectada"):
+        """Upsert de la cuenta conectada en Gmail_Accounts."""
+        ws = self._ensure_headers_sheet(GMAIL_ACCOUNTS_SHEET, GMAIL_ACCOUNTS_HEADERS)
+        now = dt.datetime.now().isoformat(timespec="seconds")
+        for r in range(2, ws.max_row + 1):
+            if str(ws.cell(r, 1).value).lower() == str(email).lower():
+                ws.cell(r, 3).value = now
+                ws.cell(r, 4).value = status
+                return r
+        ws.append([email, now, now, status])
+        return ws.max_row
+
+    def read_gmail_accounts(self):
+        if GMAIL_ACCOUNTS_SHEET not in self.wb.sheetnames:
+            return []
+        ws = self.wb[GMAIL_ACCOUNTS_SHEET]
+        return [dict(zip(GMAIL_ACCOUNTS_HEADERS,
+                         [ws.cell(r, c).value for c in range(1, 5)]))
+                for r in range(2, ws.max_row + 1) if ws.cell(r, 1).value]
+
+    @staticmethod
+    def personalize(template, lead):
+        """Variables dinámicas {{first_name}}, {{full_name}}, {{company}},
+        {{job_title}}, {{industry}}, {{seniority_level}} (y estilo {first})."""
+        first = (lead.full_name or "").split(" ")[0]
+        pairs = {"first_name": first, "full_name": lead.full_name or "",
+                 "company": lead.company or "", "job_title": lead.job_title or "",
+                 "industry": lead.industry or "",
+                 "seniority_level": lead.seniority_level or "",
+                 "first": first, "name": lead.full_name or "",
+                 "title": lead.job_title or ""}
+        out = str(template or "")
+        for k, v in pairs.items():
+            out = out.replace("{{" + k + "}}", v).replace("{" + k + "}", v)
+        return out
+
+    def create_gmail_campaign(self, name, sender, user="", subject="",
+                              total=0, status="Draft"):
+        ws = self._ensure_headers_sheet(GMAIL_CAMPAIGNS_SHEET,
+                                        GMAIL_CAMPAIGNS_HEADERS)
+        cid = f"GM-{ws.max_row:04d}"
+        ws.append([cid, name, sender, "Gmail",
+                   dt.datetime.now().isoformat(timespec="seconds"), user, status,
+                   total, subject])
+        self.state.add_log("__campaigns__", "Gmail", "-", "gmail_campaign",
+                           result=cid, notes=name)
+        return cid
+
+    def add_gmail_campaign_lead(self, cid, lead, subject, message,
+                                status="Draft", when_iso=""):
+        ws = self._ensure_headers_sheet(GMAIL_CAMPAIGN_LEADS_SHEET,
+                                        GMAIL_CAMPAIGN_LEADS_HEADERS)
+        ws.append([cid, lead.key, lead.full_name, lead.email, lead.company,
+                   subject, message, status, when_iso, ""])
+        return ws.max_row
+
+    def log_gmail_followup(self, lead, step, subject, message, status,
+                           when_iso="", note=""):
+        ws = self._ensure_headers_sheet(GMAIL_FOLLOWUPS_SHEET,
+                                        GMAIL_FOLLOWUPS_HEADERS)
+        ws.append([dt.datetime.now().isoformat(timespec="seconds"), lead.key,
+                   lead.full_name, lead.email, step, subject, message, status,
+                   when_iso, note])
+
+    def gmail_followup1_candidates(self, min_hours=None):
+        """Leads que recibieron Email 1, no respondieron, no están bloqueados y
+        ya cumplieron el tiempo configurado. Devuelve (lead, info_dict)."""
+        gap = min_hours if min_hours is not None else self.fu_gap_hours(0)
+        now = dt.datetime.now()
+        out = []
+        for sheet in self.maps:
+            for lead in self.all_leads(sheet):
+                st = self.state.get(lead.key)
+                if self._is_blocked(lead, st):
+                    continue
+                if not _is_marked(lead.stage_values.get("Email 1")):
+                    continue
+                if _is_marked(lead.stage_values.get("Email 2")):
+                    continue
+                lc = self._cell(self.wb[sheet], self.maps[sheet], lead.row,
+                                "Last Contact")
+                sent_date = None
+                for e in st.log:
+                    if e.get("action") == "sent" and                             str(e.get("step", "")).startswith("Email 1"):
+                        sent_date = e.get("ts")
+                        break
+                base = sent_date or (str(lc) + "T09:00:00" if lc else None)
+                if not base:
+                    continue
+                try:
+                    t0 = dt.datetime.fromisoformat(str(base)[:19])
+                except ValueError:
+                    continue
+                hours = (now - t0).total_seconds() / 3600
+                if hours < gap:
+                    continue
+                last_msg = subj = ""
+                for e in reversed(st.log):
+                    if e.get("action") == "sent":
+                        last_msg = (e.get("message") or "")[:80]
+                        break
+                for s in self.read_scheduled():
+                    if s.get("Lead ID") == lead.key and "|SUBJ|" in str(
+                            s.get("Notes") or ""):
+                        subj = str(s["Notes"]).split("|SUBJ|")[-1]
+                out.append((lead, {
+                    "email_inicial": str(base)[:16].replace("T", " "),
+                    "horas_sin_respuesta": round(hours),
+                    "ultimo_mensaje": last_msg, "asunto_anterior": subj,
+                    "proxima_accion": self.next_action(lead, st),
+                }))
+        return out
 
 
 # --------------------------------------------------------------------------- #

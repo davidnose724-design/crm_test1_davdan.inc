@@ -23,6 +23,7 @@ from crm_core import (
     SCHEDULE_STATUS, FOLLOWUP_CHANNELS, COLD_CALL_RESULTS, STATE_CATEGORIES,
     NOTIF_SETTINGS_SHEET, WORKFLOW_SHEET, NOTIF_DEFAULTS, WORKFLOW_DEFAULTS,
     LINKEDIN_QUEUE_STATUS, QUICK_RESCHEDULE, StateStore, _is_marked, _norm,
+    create_blank_crm,
 )
 import pandas as pd
 import integrations
@@ -31,23 +32,173 @@ import gmail_service
 st.set_page_config(page_title="Prospecting CRM", layout="wide")
 
 # --------------------------------------------------------------------------- #
-# Carga del CRM (en sesión)
+# Bootstrap: la app arranca SIN necesidad de un Excel existente
 # --------------------------------------------------------------------------- #
 
-DEFAULT_XLSX = "Manufacturing_Prospecting_CRM_v4_nuevos_leads.xlsx"
+import shutil
+
+WORKSPACE = Path("workspace")
+WORKSPACE.mkdir(exist_ok=True)
+
+DEMO_SOURCE = Path("files/crm_DEMO.xlsx")
+DEFAULT_XLSX = WORKSPACE / "crm_actual.xlsx"
 
 st.sidebar.title("⚙️ Configuración")
-xlsx_path = st.sidebar.text_input("Ruta del Excel", DEFAULT_XLSX)
+
+modo_crm = st.sidebar.radio(
+    "Cómo iniciar CRM",
+    ["Usar archivo demo", "Subir mi propio Excel", "Empezar CRM vacío"]
+)
+
+uploaded_excel = None
+
+if modo_crm == "Usar archivo demo":
+    if not DEFAULT_XLSX.exists():
+        shutil.copy(DEMO_SOURCE, DEFAULT_XLSX)
+    xlsx_path = str(DEFAULT_XLSX)
+
+elif modo_crm == "Subir mi propio Excel":
+    uploaded_excel = st.sidebar.file_uploader(
+        "Sube tu Excel CRM",
+        type=["xlsx"]
+    )
+
+    if uploaded_excel is not None:
+        with open(DEFAULT_XLSX, "wb") as f:
+            f.write(uploaded_excel.getbuffer())
+        xlsx_path = str(DEFAULT_XLSX)
+    else:
+        st.info("Sube un Excel para iniciar.")
+        st.stop()
+
+else:
+    EMPTY_XLSX = WORKSPACE / "crm_vacio.xlsx"
+
+    if not EMPTY_XLSX.exists():
+        shutil.copy(DEMO_SOURCE, EMPTY_XLSX)
+        # Por ahora se usa el demo como plantilla estructural.
+        # Luego puedes borrar leads desde la app o ajustar crm_core.py
+        # para crear hojas vacías reales.
+
+    xlsx_path = str(EMPTY_XLSX)
+
 
 @st.cache_resource(show_spinner="Cargando CRM…")
 def get_crm(path, mtime):
     return CRM(path)
 
-if not Path(xlsx_path).exists():
-    st.error(f"No encuentro el archivo: {xlsx_path}")
+
+def _looks_like_crm(data: bytes) -> bool:
+    """True si el xlsx subido ya es un CRM (algún encabezado con Outcome
+    Status); False si parece una lista de leads para importar."""
+    import io
+    from openpyxl import load_workbook
+    try:
+        wb = load_workbook(io.BytesIO(data), read_only=True)
+        for ws in wb.worksheets:
+            header = next(ws.iter_rows(min_row=1, max_row=1, values_only=True),
+                          ())
+            if any(str(h).strip() == "Outcome Status" for h in header if h):
+                return True
+    except Exception:
+        pass
+    return False
+
+
+if "crm_path" not in st.session_state:
+    st.title("👋 Bienvenido a tu Prospecting CRM")
+    st.write("Elige cómo quieres empezar. No necesitas tener un Excel: "
+             "la app puede crear uno por ti.")
+
+    c1, c2, c3 = st.columns(3)
+
+    with c1:
+        st.subheader("🎬 Archivo demo")
+        st.caption("Un CRM de ejemplo con leads, campañas y notificaciones "
+                   "para explorar la app.")
+        if st.button("Usar archivo demo", type="primary",
+                     use_container_width=True):
+            dest = WORKSPACE / "demo_crm.xlsx"
+            if not dest.exists():
+                if DEMO_SOURCE.exists():
+                    import shutil
+                    shutil.copy(DEMO_SOURCE, dest)
+                else:   # sin demo empaquetado: crear uno con las 9 industrias
+                    create_blank_crm(str(dest), industries=INDUSTRIES)
+            st.session_state["crm_path"] = str(dest)
+            st.rerun()
+
+    with c2:
+        st.subheader("📤 Subir mi Excel")
+        st.caption("Si ya es un CRM de esta app, se usa directo. Si es una "
+                   "lista de leads, se crea un CRM y se abre el asistente de "
+                   "importación (preview + mapeo de columnas).")
+        up = st.file_uploader("Archivo .xlsx / .csv", type=["xlsx", "xls", "csv"],
+                              key="boot_up")
+        if up is not None and st.button("Continuar con este archivo",
+                                        type="primary",
+                                        use_container_width=True):
+            data = up.getvalue()
+            if up.name.lower().endswith((".xlsx", ".xls")) and \
+                    _looks_like_crm(data):
+                dest = WORKSPACE / f"subido_{up.name}"
+                dest.write_bytes(data)
+                st.session_state["crm_path"] = str(dest)
+            else:
+                dest = WORKSPACE / "mi_crm.xlsx"
+                if not dest.exists():
+                    create_blank_crm(str(dest))
+                st.session_state["crm_path"] = str(dest)
+                st.session_state["pending_import"] = (up.name, data)
+                st.session_state["goto_import"] = True
+            st.rerun()
+
+    with c3:
+        st.subheader("🆕 CRM vacío")
+        st.caption("Estructura base lista para capturar o importar leads: "
+                   "Leads, Activity_Log, Notifications, Campaigns, "
+                   "Follow_Ups y Scheduled_Messages.")
+        if st.button("Empezar CRM vacío", type="primary",
+                     use_container_width=True):
+            dest = WORKSPACE / "crm_vacio.xlsx"
+            if not dest.exists():
+                create_blank_crm(str(dest))
+            st.session_state["crm_path"] = str(dest)
+            st.rerun()
+
+    if Path(DEFAULT_XLSX).exists():
+        st.divider()
+        if st.button(f"📂 Abrir archivo detectado: {DEFAULT_XLSX}"):
+            st.session_state["crm_path"] = DEFAULT_XLSX
+            st.rerun()
+
     st.stop()
 
+xlsx_path = st.session_state["crm_path"]
+if not Path(xlsx_path).exists():
+    st.error(f"El archivo de trabajo desapareció: {xlsx_path}")
+    if st.button("Volver a la pantalla inicial"):
+        st.session_state.pop("crm_path", None)
+        st.rerun()
+    st.stop()
+
+st.sidebar.title("⚙️ Configuración")
+st.sidebar.caption(f"📄 {Path(xlsx_path).name}")
+with st.sidebar.expander("⚙️ Configuración avanzada"):
+    st.caption(f"Ruta actual: `{xlsx_path}`")
+    manual_path = st.text_input("Ruta manual del Excel", xlsx_path)
+    if st.button("Usar esta ruta"):
+        if Path(manual_path).exists():
+            st.session_state["crm_path"] = manual_path
+            st.rerun()
+        else:
+            st.error("Esa ruta no existe.")
+    if st.button("🔁 Cambiar de archivo (pantalla inicial)"):
+        st.session_state.pop("crm_path", None)
+        st.rerun()
+
 crm = get_crm(xlsx_path, Path(xlsx_path).stat().st_mtime)
+IND = crm.industries()   # hojas de leads dinámicas (funciona con CRM vacío)
 
 def persist():
     """Guarda con backup previo y avisa claramente si el Excel está abierto."""
@@ -66,12 +217,14 @@ def persist():
 # Navegación
 # --------------------------------------------------------------------------- #
 
+_nav = ["📣 Campaña", "📮 Gmail Campaigns", "📧 Email Campaigns",
+        "💼 LinkedIn Manager", "📤 Importar leads", "🔁 Follow-ups",
+        "📥 Respuestas", "🔔 Notifications", "🏷️ Estados",
+        "🎨 Configuración de Estados", "⚙️ Workflow Config", "📊 Dashboard"]
+_default_page = _nav.index("📤 Importar leads") \
+    if st.session_state.pop("goto_import", False) else 0
 page = st.sidebar.radio(
-    "Sección",
-    ["📣 Campaña", "📮 Gmail Campaigns", "📧 Email Campaigns", "💼 LinkedIn Manager",
-     "📤 Importar leads", "🔁 Follow-ups", "📥 Respuestas",
-     "🔔 Notifications", "🏷️ Estados", "🎨 Configuración de Estados",
-     "⚙️ Workflow Config", "📊 Dashboard"],
+    "Sección", _nav, index=_default_page,
 )
 
 
@@ -106,70 +259,67 @@ def render_reschedule(lead, prefix):
     return False
 
 
-def _qp_value(qp, key):
-    value = qp.get(key)
-    if isinstance(value, list):
-        return value[0] if value else ""
-    return value or ""
-
-
-def _clear_gmail_oauth_state():
-    for k in ("gmail_auth_url", "gmail_oauth_state", "gmail_code_verifier"):
-        st.session_state.pop(k, None)
-
-
 def gmail_oauth_panel(cfg):
+    """Panel único de conexión Gmail con PKCE persistido.
+    Devuelve el dict de credenciales si hay sesión conectada; si no, dibuja el
+    botón de conexión / maneja el callback y devuelve None."""
     creds = st.session_state.get("gmail_creds")
     if creds is not None:
         return creds
 
     qp = st.query_params
-    code = _qp_value(qp, "code")
-    state = _qp_value(qp, "state")
-
-    if code:
-        verifier = gmail_service.recover_verifier(state) or st.session_state.get("gmail_code_verifier")
-
+    if "code" in qp:
+        # recuperar el verifier: session_state primero; si el redirect creó una
+        # sesión nueva (típico en Streamlit), lo recuperamos del 'state'.
+        verifier = st.session_state.get("gmail_code_verifier") or             gmail_service.recover_verifier(qp.get("state", ""))
         if not verifier:
-            st.error("Se perdió la sesión de autorización de Gmail. Reintenta conexión.")
-            _clear_gmail_oauth_state()
+            st.error("Se perdió la sesión de autorización (falta code_verifier).")
             if st.button("🔄 Reintentar conexión Gmail", key="gm_retry_missing"):
+                for k in ("gmail_auth_url", "gmail_oauth_state",
+                          "gmail_code_verifier", "gmail_creds"):
+                    st.session_state.pop(k, None)
                 st.query_params.clear()
                 st.rerun()
             return None
-
         try:
-            creds = gmail_service.exchange_code(cfg, code, verifier)
+            creds = gmail_service.exchange_code(cfg, qp["code"], verifier)
             st.session_state["gmail_creds"] = creds
-            _clear_gmail_oauth_state()
-            st.query_params.clear()
+            for k in ("gmail_auth_url", "gmail_oauth_state",
+                      "gmail_code_verifier"):
+                st.session_state.pop(k, None)
+            st.query_params.clear()   # borra code/state/verifier de la URL
             st.success("✅ Gmail conectado")
             st.rerun()
         except Exception as e:
             st.error(f"No pude completar la autorización: {e}")
-            _clear_gmail_oauth_state()
             if st.button("🔄 Reintentar conexión Gmail", key="gm_retry_exc"):
+                for k in ("gmail_auth_url", "gmail_oauth_state",
+                          "gmail_code_verifier", "gmail_creds"):
+                    st.session_state.pop(k, None)
                 st.query_params.clear()
                 st.rerun()
         return None
 
-    if st.button("🔗 Generar conexión Gmail", type="primary", key="gm_new_auth"):
+    # generar la URL UNA sola vez por sesión (el verifier debe ser el mismo
+    # que viaje en la URL que el usuario abre)
+    if "gmail_auth_url" not in st.session_state:
         try:
-            _clear_gmail_oauth_state()
             auth_url, state, verifier = gmail_service.build_auth_url(cfg)
             st.session_state["gmail_auth_url"] = auth_url
             st.session_state["gmail_oauth_state"] = state
             st.session_state["gmail_code_verifier"] = verifier
-            st.rerun()
         except Exception as e:
             st.error(f"No pude generar la URL de autorización: {e}")
             return None
-
-    if "gmail_auth_url" in st.session_state:
-        st.link_button("Abrir consentimiento de Google", st.session_state["gmail_auth_url"], type="primary")
-        st.caption("Después de autorizar, volverás automáticamente a la app.")
-
+    st.link_button("🔗 Conectar Gmail", st.session_state["gmail_auth_url"],
+                   type="primary")
+    st.caption("Se abrirá el consentimiento de Google. Al autorizar, volverás "
+               "a la app.")
     return None
+
+st.sidebar.caption("Aprobación humana obligatoria antes de cada envío. "
+                   "La app no automatiza LinkedIn ni evade límites. "
+                   "Backup automático antes de cada guardado.")
 
 # =========================================================================== #
 # 1) CAMPAÑA
@@ -198,7 +348,7 @@ if page == "📣 Campaña":
             })
         return pd.DataFrame(rows)
 
-    industry = st.selectbox("Industria", INDUSTRIES)
+    industry = st.selectbox("Industria", IND)
     avail = _available_table(industry, Path(xlsx_path).stat().st_mtime)
 
     fc = st.columns(4)
@@ -457,8 +607,46 @@ elif page == "📤 Importar leads":
                                mime="application/vnd.openxmlformats-officedocument."
                                     "spreadsheetml.sheet")
 
+    # --- Alta manual de leads (funciona también con CRM vacío) ---
+    with st.expander("➕ Agregar lead manualmente"):
+        m1, m2, m3 = st.columns(3)
+        mf_name = m1.text_input("Nombre completo", key="man_name")
+        mf_comp = m2.text_input("Empresa", key="man_comp")
+        mf_title = m3.text_input("Puesto", key="man_title")
+        m4, m5, m6 = st.columns(3)
+        mf_email = m4.text_input("Email", key="man_email")
+        mf_li = m5.text_input("LinkedIn URL", key="man_li")
+        mf_phone = m6.text_input("Teléfono", key="man_phone")
+        m7, m8, m9 = st.columns(3)
+        mf_loc = m7.text_input("Ubicación", key="man_loc")
+        mf_sen = m8.text_input("Seniority Level", key="man_sen")
+        mf_sheet = m9.selectbox("Hoja destino", IND, key="man_sheet")
+        mf_notes = st.text_input("Notas", key="man_notes")
+        if st.button("Agregar lead", type="primary", key="man_go"):
+            if not (mf_name or mf_comp or mf_email or mf_li):
+                st.error("Captura al menos nombre, empresa, email o LinkedIn.")
+            else:
+                added, dups = crm.add_lead_manual(
+                    mf_sheet, **{"Full Name": mf_name, "Company Name": mf_comp,
+                                 "Job Title": mf_title, "Email/Gmail": mf_email,
+                                 "LinkedIn Profile": mf_li, "Phone": mf_phone,
+                                 "Location": mf_loc, "Seniority Level": mf_sen,
+                                 "Notes": mf_notes, "Industry": mf_sheet})
+                if persist():
+                    if added:
+                        st.success(f"✅ Lead agregado a '{mf_sheet}'.")
+                    else:
+                        st.warning("Ese lead ya existía (duplicado).")
+
     ups = st.file_uploader("Sube uno o varios archivos .xlsx/.csv",
                            type=["xlsx", "xls", "csv"], accept_multiple_files=True)
+    pending = st.session_state.get("pending_import")
+    if pending and not ups:
+        import io
+        st.info(f"📎 Archivo de la pantalla inicial listo para importar: "
+                f"**{pending[0]}**")
+        _bio = io.BytesIO(pending[1]); _bio.name = pending[0]
+        ups = [_bio]
     if ups:
         frames = []
         for up in ups:
@@ -507,7 +695,8 @@ elif page == "📤 Importar leads":
             c1, c2 = st.columns(2)
             route = c1.checkbox("Enrutar por columna de industria", value=True)
             default_ind = c2.selectbox("Industria por defecto (si falta o no enruta)",
-                                       INDUSTRIES, index=INDUSTRIES.index("Other"))
+                                       IND,
+                                       index=IND.index("Other") if "Other" in IND else 0)
             st.caption("Se agregan los leads con lo disponible; solo se omiten filas "
                        "totalmente vacías y duplicados (LinkedIn / email / nombre+empresa).")
 
@@ -524,6 +713,7 @@ elif page == "📤 Importar leads":
                         df.drop(columns=["__archivo__"], errors="ignore"),
                         mapping, route_by_industry=route, default_industry=default_ind)
                     if persist():
+                        st.session_state.pop("pending_import", None)
                         st.success(f"✅ {added} leads importados · {dups} duplicados omitidos.")
                         if per:
                             st.table(pd.DataFrame(
@@ -534,7 +724,7 @@ elif page == "📤 Importar leads":
 # =========================================================================== #
 elif page == "🔁 Follow-ups":
     st.header("🔁 Follow-ups")
-    industry = st.selectbox("Industria", INDUSTRIES)
+    industry = st.selectbox("Industria", IND)
     channel = st.selectbox("Canal", ACTIVITY_CHANNELS)
     seq_channel = "Cold Call" if channel in ("Cold Call", "Llamada") else \
                   ("Email" if channel == "Email" else "LinkedIn")
@@ -1124,7 +1314,7 @@ elif page == "🏷️ Estados":
     st.divider()
     # --- Editor: cambiar manualmente a cualquiera de los 12 estados ---
     st.subheader("Cambiar estado de un lead")
-    industry = st.selectbox("Industria", INDUSTRIES, key="est_ind")
+    industry = st.selectbox("Industria", IND, key="est_ind")
     leads = crm.all_leads(industry)
     labels = [f"{l.full_name} · {l.company} · [{crm.lead_stage(l)}]" for l in leads]
     sel = st.selectbox("Lead", range(len(leads)), format_func=lambda i: labels[i])
@@ -1332,7 +1522,7 @@ elif page == "📮 Gmail Campaigns":
         else:
             sender = st.selectbox("Correo emisor (sender)", senders)
             f1, f2, f3 = st.columns(3)
-            f_ind = f1.multiselect("Industria", INDUSTRIES)
+            f_ind = f1.multiselect("Industria", IND)
             f_sen = f2.text_input("Seniority contiene")
             f_pri = f3.multiselect("Prioridad", ["Alta", "Media", "Baja"])
             f4, f5, f6 = st.columns(3)
@@ -1367,7 +1557,7 @@ elif page == "📮 Gmail Campaigns":
 
             if st.button("Generar preview de campaña", type="primary"):
                 picked = []
-                for ind in (f_ind or INDUSTRIES):
+                for ind in (f_ind or IND):
                     for l in crm.all_leads(ind):
                         stt = crm.state.get(l.key)
                         if crm._is_blocked(l, stt) or not l.email:
@@ -1667,7 +1857,7 @@ elif page == "📧 Email Campaigns":
     # --- Crear campaña por filtros ---
     st.subheader("Crear campaña")
     c1, c2, c3 = st.columns(3)
-    industry = c1.selectbox("Industria", INDUSTRIES)
+    industry = c1.selectbox("Industria", IND)
     n_leads = c2.number_input("Nº de leads", 1, 200, 30)
     warm = c3.multiselect("Lead warmth", WARMTH_LEVELS)
     c4, c5, c6 = st.columns(3)
@@ -1792,7 +1982,7 @@ elif page == "💼 LinkedIn Manager":
     # --- Crear campaña LinkedIn ---
     with st.expander("➕ Crear campaña LinkedIn", expanded=not crm.read_campaigns()):
         c1, c2, c3 = st.columns(3)
-        industry = c1.selectbox("Industria", INDUSTRIES, key="lm_ind")
+        industry = c1.selectbox("Industria", IND, key="lm_ind")
         n_leads = c2.number_input("Nº de leads", 1, 200, 50, key="lm_n")
         name = c3.text_input("Nombre de la campaña",
                              f"{dt.date.today():%b} Managers", key="lm_name")
@@ -2015,7 +2205,7 @@ elif page == "📊 Dashboard":
     rfq_active = 0
     state_counts = {}
     color_cfg = crm.read_state_colors()
-    for ind in INDUSTRIES:
+    for ind in IND:
         for l in crm.all_leads(ind):
             stt = crm.state.get(l.key)
             disp = crm.resolve_display_state(l, stt)
@@ -2056,7 +2246,7 @@ elif page == "📊 Dashboard":
                    and str(s.get("Channel")) in ("Email", "Gmail")])
     bounced = blocked_n = dnc = stopped = later_n = 0
     responded_n = 0
-    for ind in INDUSTRIES:
+    for ind in IND:
         for l in crm.all_leads(ind):
             if l.outcome == "Email Bounced":
                 bounced += 1
@@ -2137,7 +2327,7 @@ elif page == "📊 Dashboard":
     st.divider()
     st.subheader("📊 Dashboard por industria")
     rows = []
-    for ind in INDUSTRIES:
+    for ind in IND:
         leads = crm.all_leads(ind)
         total = len(leads)
         def cnt(step):

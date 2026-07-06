@@ -272,6 +272,38 @@ CAMPAIGN_HEADERS = ["Campaign ID", "Name", "Channel", "Industry", "Step",
                     "Created", "Notes", "Lead Keys"]
 CAMPAIGN_STATUS = ["Activa", "Pendiente", "Pausada", "Terminada"]
 
+# Encabezado canónico de las hojas de leads (orden del archivo original).
+CANONICAL_HEADER = [
+    "Full Name", "First Name", "Last Name", "Job Title", "Seniority Level",
+    "Seniority Rank", "Lead Score", "Opportunity Score", "Company Name",
+    "Industry", "Location", "Company Domain", "LinkedIn Profile", "Phone",
+    "Email/Gmail", "Follow Up 1", "Follow Up 2", "Follow Up 3", "Follow Up 4",
+    "Follow Up 5", "Email 1", "Email 2", "Email 3", "Email 4", "Email 5",
+    "Cold Call 1", "Cold Call 2", "Cold Call 3", "Meeting", "RFQ", "Quote",
+    "Won", "Lost", "Outcome Status", "Rejection Reason", "Interest Reason",
+    "Notes", "First Contact", "Last Contact", "Next Follow-up",
+]
+
+# Perfil de prospección: dolores probables y servicios por industria.
+INDUSTRY_PAINS = {
+    "Automotive": ("Lead times largos y presión de costos en tooling/estampado",
+                   "Manufactura de precisión con reducción de costo por pieza"),
+    "Pharmaceutical": ("Cumplimiento regulatorio y trazabilidad de componentes",
+                       "Componentes con documentación y calidad certificada"),
+    "Medical Devices": ("Tolerancias críticas y validación de proveedores",
+                        "Maquinado de precisión con procesos validados"),
+    "Industrial Equipment": ("Repuestos caros y proveedores lentos",
+                             "Fabricación flexible de partes y ensambles"),
+    "HVAC Appliances": ("Costos de componentes metálicos y estacionalidad",
+                        "Estampado y ensamble con capacidad escalable"),
+    "Packaging": ("Presión de precio y tiempos de cambio de molde",
+                  "Herramentales y componentes de empaque competitivos"),
+    "Consumer Goods": ("Volúmenes variables y time-to-market",
+                       "Producción ágil con escalamiento rápido"),
+    "Software IT": ("Hardware/prototipos y cadena de suministro física",
+                    "Manufactura de soporte para hardware y prototipos"),
+}
+
 # --- Gmail Campaigns ----------------------------------------------------------
 GMAIL_ACCOUNTS_SHEET = "Gmail_Accounts"
 GMAIL_ACCOUNTS_HEADERS = ["Email", "Connected At", "Last Sync", "Status"]
@@ -468,6 +500,10 @@ class CRM:
             ws = self.wb[s]
             header = next(ws.iter_rows(min_row=1, max_row=1, values_only=True))
             self.maps[s] = ColumnMap(header)
+
+    def industries(self):
+        """Hojas de datos (leads) presentes en el libro, en orden."""
+        return [s for s in self.wb.sheetnames if s not in NON_DATA_SHEETS]
 
     # ---- lectura -------------------------------------------------------- #
 
@@ -1007,7 +1043,9 @@ class CRM:
                 key = f"__row{added}__"  # único en el lote
 
             sheet = (self._match_industry_sheet(ind_text) if route_by_industry else None) \
-                or (default_industry if default_industry in self.maps else "Other")
+                or (default_industry if default_industry in self.maps
+                    else ("Other" if "Other" in self.maps
+                          else next(iter(self.maps))))
 
             # Crear columnas nuevas necesarias (VP/Pain Point + las de clasificación).
             need_extra = CLASSIFY_COLUMNS + [c for c in ("Value Proposition", "Pain Point")
@@ -1082,6 +1120,8 @@ class CRM:
         ah = cmap.letter("Outcome Status")
         last_col = get_column_letter(ws.max_column)
         nm = ws.max_row
+        if nm < 2 or ah is None:
+            return   # hoja sin filas de datos (p. ej. CRM recién creado)
         full = f"A2:{last_col}{nm}"
 
         # 1) recolectar reglas existentes y sus fórmulas
@@ -1096,8 +1136,8 @@ class CRM:
         for rule in rules:
             ws.conditional_formatting.add(full, rule)
 
-        # 3) añadir las 4 reglas nuevas si no existen
-        for status in ["Respondió", "Meeting", "RFQ", "Quote"]:
+        # 3) sembrar reglas faltantes (las 8: también repara libros nuevos)
+        for status in ROW_FILLS:
             f = f'${ah}2="{status}"'
             if any(status in fm for fm in formulas):
                 continue
@@ -1964,6 +2004,75 @@ class CRM:
             return None, bkp, f"No pude guardar el archivo: {e}"
 
     # ===================================================================== #
+    # Alta manual de leads y perfil de prospección
+    # ===================================================================== #
+
+    def add_lead_manual(self, sheet, **fields):
+        """Agrega un lead capturado a mano. fields usa nombres canónicos
+        (Full Name, Company Name, Job Title, Industry, LinkedIn Profile,
+        Email/Gmail, Phone, Location, Seniority Level, Notes...)."""
+        import pandas as pd
+        if sheet not in self.maps:
+            sheet = next(iter(self.maps))
+        df = pd.DataFrame([{k: v for k, v in fields.items() if v}])
+        mapping = {k: k for k in df.columns}
+        added, dups, per = self.import_leads(df, mapping,
+                                             route_by_industry=False,
+                                             default_industry=sheet)
+        return added, dups
+
+    def build_prospecting_profile(self, lead, st=None):
+        """Prospecting Profile calculado con reglas (sin inventar datos que no
+        existen). Devuelve dict con los 9 campos + mensaje sugerido."""
+        st = st or self.state.get(lead.key)
+        pain_col = self._cell(self.wb[lead.sheet], self.maps[lead.sheet],
+                              lead.row, "Pain Point")
+        vp_col = self._cell(self.wb[lead.sheet], self.maps[lead.sheet],
+                            lead.row, "Value Proposition")
+        ind_pain, ind_service = INDUSTRY_PAINS.get(
+            lead.industry, ("Costos y confiabilidad de proveedores",
+                            "Manufactura confiable con costo competitivo"))
+        rank = lead.seniority_rank if lead.seniority_rank < 900 else None
+        decision = ("Decisor final" if (rank or 9) <= 2 else
+                    "Alto poder de decisión" if (rank or 9) <= 4 else
+                    "Influenciador / recomendador" if (rank or 9) <= 6 else
+                    "Usuario / evaluador técnico")
+        prio = self.lead_priority(lead)
+        warmth = self.classify_warmth(lead, st)
+        angle = ("Directo a valor de negocio (ROI, costo total)"
+                 if prio == "Alta" else
+                 "Consultivo: dolor específico del rol y caso similar"
+                 if prio == "Media" else
+                 "Educativo: material útil y contacto de bajo compromiso")
+        risk = []
+        if not lead.email and not lead.phone:
+            risk.append("sin email/teléfono: LinkedIn es el único canal")
+        if lead.outcome == "Prospectar Después":
+            risk.append("pidió recontacto: respetar la fecha")
+        if warmth == "Frío":
+            risk.append("sin contacto previo: primer toque, no vender de golpe")
+        pain = str(pain_col) if pain_col else ind_pain
+        service = str(vp_col) if vp_col else ind_service
+        first = (lead.full_name or "").split(" ")[0]
+        msg = (f"Hola {first}, vi tu rol de {lead.job_title or 'liderazgo'} en "
+               f"{lead.company}. Trabajamos con empresas de {lead.industry} en "
+               f"{pain.lower()[:60]} — {service.lower()[:60]}. "
+               f"¿Te hace sentido conectar?")
+        return {
+            "Por qué es relevante": f"{lead.seniority_level or 'Rol'} en "
+                                    f"{lead.company} ({lead.industry}); "
+                                    f"prioridad {prio}, warmth {warmth}",
+            "Industria": lead.industry,
+            "Nivel de decisión": decision,
+            "Problema probable": pain,
+            "Servicio a ofrecer": service,
+            "Ángulo de mensaje": angle,
+            "Prioridad": prio,
+            "Riesgo / nota": "; ".join(risk) or "Sin riesgos detectados",
+            "Mensaje sugerido (LinkedIn)": msg,
+        }
+
+    # ===================================================================== #
     # Configuración clave-valor (Notification_Settings / Workflow_Config)
     # ===================================================================== #
 
@@ -2504,6 +2613,33 @@ class CRM:
                     "proxima_accion": self.next_action(lead, st),
                 }))
         return out
+
+
+def create_blank_crm(path, industries=None):
+    """Crea un CRM vacío y funcional: hoja(s) de leads con el encabezado
+    canónico + Activity_Log, Notifications, Campaigns, Follow_Ups y
+    Scheduled_Messages, con colores y validaciones sembrados."""
+    industries = industries or ["Leads"]
+    wb = Workbook()
+    wb.remove(wb.active)
+    for name in industries:
+        ws = wb.create_sheet(name)
+        ws.append(CANONICAL_HEADER)
+        for c in ws[1]:
+            c.font = Font(bold=True, color="FFFFFF")
+            c.fill = PatternFill("solid", fgColor="1F4E78")
+        ws.freeze_panes = "A2"
+    wb.save(path)
+    crm = CRM(path)
+    crm._ensure_activity_sheet()
+    crm._ensure_notifications_sheet()
+    crm._ensure_campaigns_sheet()
+    crm._ensure_history_sheet()      # Follow_Ups (Follow_Up_History)
+    crm._ensure_scheduled_sheet()
+    crm._ensure_color_sheet()
+    crm.reanchor_all()               # siembra las 8 reglas de color + dropdowns
+    crm.save(backup=False)
+    return path
 
 
 # --------------------------------------------------------------------------- #

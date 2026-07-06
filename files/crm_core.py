@@ -39,7 +39,7 @@ NON_DATA_SHEETS = {"Dashboard", "Lead Queue", ACTIVITY_LOG_SHEET, NOTIFICATIONS_
                    "Scheduled_Messages", "Follow_Up_History", "State_Color_Config",
                    "Notification_Settings", "Workflow_Config", "Campaigns",
                    "Gmail_Accounts", "Gmail_Campaigns", "Gmail_Campaign_Leads",
-                   "Gmail_Follow_Ups"}
+                   "Gmail_Follow_Ups", "Ideal_Customer_Profile"}
 
 # Encabezados de la hoja Notifications.
 NOTIFICATION_HEADERS = [
@@ -271,6 +271,36 @@ CAMPAIGN_HEADERS = ["Campaign ID", "Name", "Channel", "Industry", "Step",
                     "Status", "Total Leads", "Sent", "Scheduled Date",
                     "Created", "Notes", "Lead Keys"]
 CAMPAIGN_STATUS = ["Activa", "Pendiente", "Pausada", "Terminada"]
+
+# --- Perfil de Cliente Ideal (Buyer Persona) ---------------------------------
+ICP_SHEET = "Ideal_Customer_Profile"
+ICP_FIELDS = [
+    ("que_vendo", "Qué vende mi empresa"),
+    ("tipo_comprador", "Tipo de comprador ideal"),
+    ("industrias_objetivo", "Industrias objetivo (separadas por coma)"),
+    ("empresas_objetivo", "Empresas objetivo (separadas por coma)"),
+    ("puestos_objetivo", "Puestos objetivo (separados por coma)"),
+    ("seniority_ideal", "Seniority ideal (separados por coma)"),
+    ("ubicacion_ideal", "País / ubicación ideal (separados por coma)"),
+    ("tamano_empresa", "Tamaño de empresa ideal"),
+    ("problemas_que_resuelvo", "Problemas que resuelvo (separados por coma)"),
+    ("beneficios", "Beneficios principales (separados por coma)"),
+    ("keywords_positivas", "Palabras clave positivas (separadas por coma)"),
+    ("keywords_negativas", "Palabras clave negativas (separadas por coma)"),
+    ("leads_a_evitar", "Leads a evitar (nombres/empresas/puestos, por coma)"),
+    ("canales_preferidos", "Canales preferidos (LinkedIn, Email, Cold Call)"),
+    ("prioridad_minima", "Nivel mínimo de prioridad aceptado (Alta/Media/Baja)"),
+    ("mensaje_base", "Mensaje base de prospección"),
+]
+ICP_DEFAULTS = {k: "" for k, _ in ICP_FIELDS}
+ICP_DEFAULTS.update({
+    "canales_preferidos": "LinkedIn, Email, Cold Call",
+    "prioridad_minima": "Baja",
+    "mensaje_base": ("Hola {{first_name}}, vi tu rol de {{job_title}} en "
+                     "{{company}}. Ayudamos a empresas como la tuya con "
+                     "{{problema}} — {{beneficio}}. ¿Te hace sentido conectar?"),
+})
+FIT_LEVELS = ["Excelente", "Bueno", "Medio", "Bajo", "Malo"]
 
 # Encabezado canónico de las hojas de leads (orden del archivo original).
 CANONICAL_HEADER = [
@@ -2073,6 +2103,177 @@ class CRM:
         }
 
     # ===================================================================== #
+    # Perfil de Cliente Ideal (Buyer Persona) + evaluación de fit
+    # ===================================================================== #
+
+    def read_icp(self):
+        """Lee el Perfil de Cliente Ideal desde la hoja (con defaults)."""
+        return self.read_kv(ICP_SHEET, ICP_DEFAULTS)
+
+    def save_icp(self, profile: dict):
+        """Guarda el perfil completo en la hoja Ideal_Customer_Profile."""
+        for k, _label in ICP_FIELDS:
+            self.set_kv(ICP_SHEET, k, profile.get(k, ""), ICP_DEFAULTS)
+
+    @staticmethod
+    def _terms(csv_text):
+        return [t.strip() for t in str(csv_text or "").split(",") if t.strip()]
+
+    @staticmethod
+    def _match_any(text, terms):
+        blob = _norm(str(text or ""))
+        return [t for t in terms if _norm(t) and _norm(t) in blob]
+
+    def evaluate_lead_fit(self, lead, icp=None, st=None):
+        """Evalúa un lead contra el Cliente Ideal. Reglas transparentes, sin
+        inventar datos: los criterios sin dato o sin configurar se omiten.
+        Devuelve dict: score 0-100, level, pros, cons, canal, mensaje, pain,
+        beneficio, accion."""
+        icp = icp or self.read_icp()
+        st = st or self.state.get(lead.key)
+        loc = self._cell(self.wb[lead.sheet], self.maps[lead.sheet],
+                         lead.row, "Location") or ""
+        notes = self._cell(self.wb[lead.sheet], self.maps[lead.sheet],
+                           lead.row, "Notes") or ""
+        pain_col = self._cell(self.wb[lead.sheet], self.maps[lead.sheet],
+                              lead.row, "Pain Point") or ""
+        vp_col = self._cell(self.wb[lead.sheet], self.maps[lead.sheet],
+                            lead.row, "Value Proposition") or ""
+        pros, cons = [], []
+        score = 50
+
+        # bloqueados: score 0 directo
+        if self._is_blocked(lead, st):
+            estado = lead.outcome or ("Respondió" if st.responded else "bloqueado")
+            return {"score": 0, "level": "Malo",
+                    "pros": [], "cons": [f"Lead bloqueado/cerrado: {estado}"],
+                    "canal": "—", "mensaje": "", "pain": pain_col or "—",
+                    "beneficio": vp_col or "—", "accion": self.next_action(lead, st)}
+
+        def crit(terms_key, value, pts_hit, pts_miss, pro_txt, con_txt):
+            nonlocal score
+            terms = self._terms(icp.get(terms_key))
+            if not terms or value in (None, ""):
+                return
+            hits = self._match_any(value, terms)
+            if hits:
+                score += pts_hit
+                pros.append(pro_txt.format(", ".join(hits[:2])))
+            elif pts_miss:
+                score += pts_miss
+                cons.append(con_txt)
+
+        crit("industrias_objetivo", lead.industry, 15, -10,
+             "Industria objetivo ({})", "Industria fuera del objetivo")
+        crit("puestos_objetivo", lead.job_title, 15, -5,
+             "Puesto objetivo ({})", "Puesto no coincide con el objetivo")
+        crit("seniority_ideal", (lead.seniority_level or "") + " " +
+             (lead.job_title or ""), 10, 0, "Seniority ideal ({})", "")
+        crit("ubicacion_ideal", loc, 8, -3,
+             "Ubicación ideal ({})", "Fuera de la ubicación ideal")
+        crit("empresas_objetivo", lead.company, 8, 0,
+             "Empresa objetivo ({})", "")
+
+        blob = " ".join([lead.job_title or "", lead.company or "", str(notes),
+                         str(pain_col), str(vp_col)])
+        pos = self._match_any(blob, self._terms(icp.get("keywords_positivas")))
+        if pos:
+            score += 10
+            pros.append(f"Keywords positivas: {', '.join(pos[:3])}")
+        neg = self._match_any(blob, self._terms(icp.get("keywords_negativas")))
+        if neg:
+            score -= 25
+            cons.append(f"Keywords negativas: {', '.join(neg[:3])}")
+        evitar = self._match_any(
+            " ".join([lead.full_name or "", lead.company or "",
+                      lead.job_title or ""]),
+            self._terms(icp.get("leads_a_evitar")))
+        cap = 100
+        if evitar:
+            cap = 20   # lista explícita de evitar: el fit no puede ser bueno
+            cons.append(f"Coincide con 'leads a evitar': {', '.join(evitar[:2])}")
+
+        # canal preferido vs datos de contacto disponibles
+        prefs = [c.strip() for c in
+                 str(icp.get("canales_preferidos") or "").split(",") if c.strip()]
+        has = {"LinkedIn": bool(lead.linkedin), "Email": bool(lead.email),
+               "Cold Call": bool(lead.phone)}
+        avail = [c for c in prefs if has.get(c)]
+        if prefs:
+            if avail:
+                score += 8
+                pros.append(f"Datos para canal preferido: {avail[0]}")
+            else:
+                score -= 10
+                cons.append("Sin datos de contacto para los canales preferidos")
+        canal = avail[0] if avail else self.recommend_channel(lead)
+
+        # prioridad mínima aceptada
+        order = {"Alta": 3, "Media": 2, "Baja": 1}
+        prio = self.lead_priority(lead)
+        minp = str(icp.get("prioridad_minima") or "Baja").strip().title()
+        if order.get(prio, 2) < order.get(minp, 1):
+            score -= 15
+            cons.append(f"Prioridad {prio} debajo del mínimo ({minp})")
+        else:
+            pros.append(f"Prioridad {prio}")
+
+        # historial / estado
+        if st.responded or lead.outcome == "Respondió":
+            score += 10
+            pros.append("Ya respondió antes (lead tibio/caliente)")
+        if self.classify_warmth(lead, st) == "Caliente":
+            score += 5
+        if lead.outcome == "Prospectar Después":
+            cons.append("Pidió recontacto: respetar la fecha")
+
+        score = max(0, min(cap, min(100, score)))
+        level = ("Excelente" if score >= 80 else "Bueno" if score >= 60 else
+                 "Medio" if score >= 40 else "Bajo" if score >= 20 else "Malo")
+
+        pain = str(pain_col) or (self._terms(icp.get("problemas_que_resuelvo"))
+                                 or [INDUSTRY_PAINS.get(lead.industry,
+                                     ("Costos y confiabilidad", ""))[0]])[0]
+        beneficio = str(vp_col) or (self._terms(icp.get("beneficios"))
+                                    or ["Valor claro para su operación"])[0]
+        tmpl = icp.get("mensaje_base") or ICP_DEFAULTS["mensaje_base"]
+        tmpl = tmpl.replace("{{problema}}", pain).replace("{{beneficio}}",
+                                                          beneficio)
+        mensaje = self.personalize(tmpl, lead)
+        return {"score": score, "level": level, "pros": pros, "cons": cons,
+                "canal": canal, "mensaje": mensaje, "pain": pain,
+                "beneficio": beneficio, "accion": self.next_action(lead, st)}
+
+    def assisted_mark_sent(self, lead, channel="LinkedIn", message="", user=""):
+        """Marca enviado el siguiente paso del canal (asistido, fuera de
+        campaña): celda de etapa + Current Stage + Follow Up Step + próxima
+        fecha según Workflow_Config + Activity_Log. Devuelve (paso, próxima)."""
+        seq = {"Gmail": "Email", "Email": "Email",
+               "Cold Call": "Cold Call"}.get(channel, "LinkedIn")
+        steps = CHANNEL_STEPS[seq]
+        idx = next((i for i, s in enumerate(steps)
+                    if not _is_marked(lead.stage_values.get(s))), None)
+        if idx is None:
+            return None, None
+        step = steps[idx]
+        self.mark_sent(lead, channel, step, message=message)
+        self.ensure_columns(lead.sheet, CLASSIFY_COLUMNS + RESCHEDULE_COLUMNS)
+        stage_label = "Mensaje inicial enviado" if idx == 0 else f"Follow Up {idx}"
+        self._set(lead, "Current Stage", stage_label)
+        self._set(lead, "Follow Up Step", step)
+        if user:
+            self._set(lead, "Owner/User", user)
+        nxt = None
+        if idx + 1 < len(steps):
+            gap_h = self.fu_gap_hours(idx)
+            nxt = dt.datetime.now() + dt.timedelta(hours=gap_h)
+            sst = self.state.get(lead.key)
+            sst.scheduled[steps[idx + 1]] = nxt.isoformat(timespec="seconds")
+            self.state.put(lead.key, sst)
+            self._set(lead, "Next Follow-up", nxt.date().isoformat())
+        return step, nxt
+
+    # ===================================================================== #
     # Configuración clave-valor (Notification_Settings / Workflow_Config)
     # ===================================================================== #
 
@@ -2253,6 +2454,12 @@ class CRM:
         si la campaña terminó, crea automáticamente la de Follow Up N+1."""
         step, seq = self._campaign_step_name(camp)
         self.mark_sent(lead, camp.get("Channel") or seq, step, message=message)
+        # reflejar en columnas: Current Stage + Follow Up Step
+        self.ensure_columns(lead.sheet, CLASSIFY_COLUMNS + RESCHEDULE_COLUMNS)
+        idx0 = int(camp.get("Step") or 0)
+        stage_label = "Mensaje inicial enviado" if idx0 == 0 else f"Follow Up {idx0}"
+        self._set(lead, "Current Stage", stage_label)
+        self._set(lead, "Follow Up Step", step)
         # siguiente follow-up con las horas configuradas
         idx = int(camp.get("Step") or 0)
         gap_h = self.fu_gap_hours(idx)

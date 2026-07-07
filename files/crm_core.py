@@ -39,7 +39,8 @@ NON_DATA_SHEETS = {"Dashboard", "Lead Queue", ACTIVITY_LOG_SHEET, NOTIFICATIONS_
                    "Scheduled_Messages", "Follow_Up_History", "State_Color_Config",
                    "Notification_Settings", "Workflow_Config", "Campaigns",
                    "Gmail_Accounts", "Gmail_Campaigns", "Gmail_Campaign_Leads",
-                   "Gmail_Follow_Ups", "Ideal_Customer_Profile"}
+                   "Gmail_Follow_Ups", "Ideal_Customer_Profile",
+                   "Lead_Fit_Evaluation"}
 
 # Encabezados de la hoja Notifications.
 NOTIFICATION_HEADERS = [
@@ -224,6 +225,7 @@ CANON_SYNONYMS = {
     "Next Follow Up Time": ["next follow up time", "hora follow up", "fu time"],
     "Follow Up Reason": ["follow up reason", "motivo follow up", "razon reprogramacion"],
     "Owner/User": ["owner/user", "owner", "user", "usuario", "responsable"],
+    "LinkedIn State": ["linkedin state", "li state", "estado linkedin"],
     "First Contact": ["first contact", "primer contacto"],
     "Last Contact": ["last contact", "ultimo contacto", "último contacto"],
     "Next Follow-up": ["next follow-up", "next followup", "proximo seguimiento"],
@@ -301,6 +303,13 @@ ICP_DEFAULTS.update({
                      "{{problema}} — {{beneficio}}. ¿Te hace sentido conectar?"),
 })
 FIT_LEVELS = ["Excelente", "Bueno", "Medio", "Bajo", "Malo"]
+
+LEAD_FIT_SHEET = "Lead_Fit_Evaluation"
+LEAD_FIT_HEADERS = [
+    "Timestamp", "Lead ID", "Full Name", "Company", "Job Title", "Seniority",
+    "Industry", "LinkedIn URL", "Fit Score", "Fit Level", "Why Good Fit",
+    "Why Bad Fit", "Suggested Message", "Next Action",
+]
 
 # Encabezado canónico de las hojas de leads (orden del archivo original).
 CANONICAL_HEADER = [
@@ -2243,6 +2252,44 @@ class CRM:
         return {"score": score, "level": level, "pros": pros, "cons": cons,
                 "canal": canal, "mensaje": mensaje, "pain": pain,
                 "beneficio": beneficio, "accion": self.next_action(lead, st)}
+
+    def log_fit_evaluation(self, lead, fit, when=None):
+        """Guarda una evaluación de fit en la hoja Lead_Fit_Evaluation."""
+        ws = self._ensure_headers_sheet(LEAD_FIT_SHEET, LEAD_FIT_HEADERS)
+        when = when or dt.datetime.now()
+        ws.append([when.isoformat(timespec="seconds"), lead.key, lead.full_name,
+                   lead.company, lead.job_title, lead.seniority_level,
+                   lead.industry, lead.linkedin, fit["score"], fit["level"],
+                   "; ".join(fit["pros"]) or "—",
+                   "; ".join(fit["cons"]) or "—",
+                   fit["mensaje"], fit["accion"]])
+
+    def fit_campaign_candidates(self, icp=None, industries=None, n=50,
+                                fit_min=0, exclude_won=True):
+        """Candidatos para campaña LinkedIn por fit: ordenados de mayor a menor
+        Fit Score. Excluye automáticamente Lost, Blacklist, Do Not Contact,
+        Blocked/Email Bounced, sin LinkedIn URL y (opcional) Won."""
+        icp = icp or self.read_icp()
+        hard_out = {"Lost", "Blacklist", "Do Not Contact", "Blocked",
+                    "Email Bounced"}
+        out = []
+        for sheet in (industries or list(self.maps)):
+            if sheet not in self.maps:
+                continue
+            for lead in self.all_leads(sheet):
+                if not lead.linkedin:
+                    continue
+                if lead.outcome in hard_out:
+                    continue
+                if exclude_won and lead.outcome == "Won":
+                    continue
+                st = self.state.get(lead.key)
+                fit = self.evaluate_lead_fit(lead, icp, st)
+                if fit["score"] < fit_min:
+                    continue
+                out.append((lead, fit))
+        out.sort(key=lambda t: -t[1]["score"])
+        return out[:n]
 
     def assisted_mark_sent(self, lead, channel="LinkedIn", message="", user=""):
         """Marca enviado el siguiente paso del canal (asistido, fuera de

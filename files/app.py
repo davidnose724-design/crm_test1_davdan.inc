@@ -29,6 +29,8 @@ from crm_core import (
 import pandas as pd
 import integrations
 import gmail_service
+import linkedin_inbox as li_inbox
+import linkedin_session as ls_session
 
 st.set_page_config(page_title="Prospecting CRM", layout="wide")
 
@@ -219,8 +221,7 @@ def persist():
 # --------------------------------------------------------------------------- #
 
 _nav = ["📣 Campaña", "📮 Gmail Campaigns", "📧 Email Campaigns",
-        "💼 LinkedIn Manager", "🎯 Prospecting Manager",
-        "📤 Importar leads", "🔁 Follow-ups",
+        "💼 LinkedIn Manager", "📤 Importar leads", "🔁 Follow-ups",
         "📥 Respuestas", "🔔 Notifications", "🏷️ Estados",
         "🎨 Configuración de Estados", "⚙️ Workflow Config", "📊 Dashboard"]
 _default_page = _nav.index("📤 Importar leads") \
@@ -228,6 +229,105 @@ _default_page = _nav.index("📤 Importar leads") \
 page = st.sidebar.radio(
     "Sección", _nav, index=_default_page,
 )
+
+
+def _render_inbox():
+    st.caption("Sin scraping ni automatización del navegador (política de "
+               "LinkedIn y regla del proyecto). Fuentes: registro manual y "
+               "la **exportación oficial** de LinkedIn (Configuración → "
+               "Obtener una copia de tus datos → messages.csv). La capa de "
+               "proveedores permite conectar en el futuro una API oficial "
+               "sin reescribir el CRM.")
+    prov_name = st.radio("Fuente", ["Exportación oficial (messages.csv)",
+                                    "Registro manual"], horizontal=True)
+    if prov_name.startswith("Exportación"):
+        own = st.text_input("Tu nombre en LinkedIn (para filtrar tus "
+                            "propios mensajes)", key="li_own")
+        up = st.file_uploader("messages.csv de tu exportación oficial",
+                              type=["csv"], key="li_csv")
+        if up is not None and st.button("🔄 Sync Inbox", type="primary"):
+            prov = li_inbox.DataExportProvider(up.getvalue(), own_name=own)
+            res = li_inbox.sync_inbox(crm, prov)
+            if persist():
+                st.success(f"Procesados: {res.get('processed', 0)} · "
+                           f"duplicados omitidos: {res.get('duplicates', 0)} · "
+                           f"asociados a lead: {res.get('matched', 0)} · "
+                           f"a revisión: {res.get('review', 0)}")
+    else:
+        m1, m2 = st.columns(2)
+        s_name = m1.text_input("Remitente (nombre)", key="li_ms")
+        s_url = m2.text_input("LinkedIn URL del remitente", key="li_mu")
+        s_txt = st.text_area("Mensaje recibido (pégalo aquí)", key="li_mt")
+        if st.button("Registrar y procesar", type="primary"):
+            prov = li_inbox.ManualProvider()
+            prov.add(s_name, s_txt, profile_url=s_url)
+            res = li_inbox.sync_inbox(crm, prov)
+            if persist():
+                r0 = res
+                st.success(f"Procesado. Asociado a lead: "
+                           f"{'sí' if r0.get('matched') else 'no'} · "
+                           f"a revisión: {r0.get('review', 0)}")
+
+    # bandeja + cola de revisión humana
+    if "LinkedIn_Inbox" in crm.wb.sheetnames:
+        ws = crm.wb["LinkedIn_Inbox"]
+        rows_ib = [[ws.cell(r, c).value for c in
+                    range(1, len(li_inbox.LI_INBOX_HEADERS) + 1)]
+                   for r in range(2, ws.max_row + 1)]
+        if rows_ib:
+            df_ib = pd.DataFrame(rows_ib,
+                                 columns=li_inbox.LI_INBOX_HEADERS)
+            rev = df_ib[df_ib["Requires Review"] == "Sí"]
+            if len(rev):
+                st.subheader(f"🧑‍⚖️ Revisión humana pendiente ({len(rev)})")
+                st.dataframe(rev, use_container_width=True,
+                             hide_index=True)
+                st.caption("Clasifica estos casos manualmente en "
+                           "Notifications → Registrar respuesta, o en "
+                           "Estados.")
+            st.subheader("Bandeja (últimos 50)")
+            st.dataframe(df_ib.tail(50), use_container_width=True,
+                         hide_index=True)
+
+    # ---------- Centro de notificaciones LinkedIn ----------
+
+def _render_li_notifications():
+    unread = li_inbox.read_li_notifications(crm, unread_only=True)
+    st.metric("🔔 No leídas", len(unread))
+    only_unread = st.checkbox("Ver solo no leídas", value=True)
+    notis = unread if only_unread else             li_inbox.read_li_notifications(crm)
+    if not notis:
+        st.info("Sin notificaciones LinkedIn por ahora.")
+    for n in reversed(notis):
+        pri = {"Alta": "🔴", "Media": "🟡", "Baja": "⚪"}.get(
+            str(n.get("priority")), "🟡")
+        with st.expander(f"{pri} {n.get('type')} · {n.get('title')} · "
+                         f"{str(n.get('created_at'))[:16]}"):
+            st.write(n.get("message") or "—")
+            st.caption(f"id: {n.get('id')} · lead: "
+                       f"{n.get('lead_id') or '—'} · ref: "
+                       f"{n.get('action_url_or_reference') or '—'}")
+            c1, c2 = st.columns(2)
+            if not n.get("read_at"):
+                if c1.button("Mark as Read", key=f"nc_r{n['_row']}"):
+                    li_inbox.mark_li_notification_read(crm, n["_row"])
+                    if persist():
+                        st.rerun()
+            if n.get("lead_id"):
+                if c2.button("Open Lead", key=f"nc_o{n['_row']}"):
+                    ld = crm._find_lead_by_key(n["lead_id"])
+                    if ld:
+                        st.session_state["resp_lead"] = (ld.sheet, ld.row)
+                        st.info(f"Lead cargado: {ld.full_name}. Ábrelo en "
+                                "la sección 📥 Respuestas o 🏷️ Estados.")
+                    else:
+                        st.warning("No encontré ese lead en el CRM.")
+    if notis and st.button("Marcar todas como leídas"):
+        for n in li_inbox.read_li_notifications(crm, unread_only=True):
+            li_inbox.mark_li_notification_read(crm, n["_row"])
+        if persist():
+            st.rerun()
+
 
 
 def render_reschedule(lead, prefix):
@@ -1971,337 +2071,406 @@ elif page == "📧 Email Campaigns":
             st.error(f"No pude leer el buzón: {e}")
 
 # =========================================================================== #
-# PROSPECTING MANAGER (Cliente Ideal genérico — cualquier industria/servicio)
-# =========================================================================== #
-elif page == "🎯 Prospecting Manager":
-    st.header("🎯 Prospecting Manager")
-    st.caption("Define tu Cliente Ideal (cualquier giro, no solo manufactura) y "
-               "la app evalúa el fit de cada lead importado. Sin scraping, sin "
-               "automatizar LinkedIn: tú envías, la app organiza y registra.")
+# LINKEDIN MANAGER (asistido: Cliente Ideal + campañas por Fit + cola)
 
-    tabICP, tabEval = st.tabs(["🧭 Perfil de Cliente Ideal", "🔎 Evaluar leads"])
-
-    # ---------- Perfil de Cliente Ideal / Buyer Persona ----------
-    with tabICP:
-        saved = crm.read_icp()
-        icp = st.session_state.get("icp", dict(saved))
-        cols = st.columns(2)
-        for i, (key, label) in enumerate(ICP_FIELDS):
-            with cols[i % 2]:
-                if key == "mensaje_base":
-                    icp[key] = st.text_area(
-                        label + "  (variables: {{first_name}}, {{company}}, "
-                        "{{job_title}}, {{industry}}, {{problema}}, "
-                        "{{beneficio}})", icp.get(key, ""), height=110,
-                        key=f"icp_{key}")
-                elif key == "prioridad_minima":
-                    opts = ["Alta", "Media", "Baja"]
-                    cur = icp.get(key) or "Baja"
-                    icp[key] = st.selectbox(
-                        label, opts, index=opts.index(cur) if cur in opts else 2,
-                        key=f"icp_{key}")
-                else:
-                    icp[key] = st.text_input(label, icp.get(key, ""),
-                                             key=f"icp_{key}")
-        st.session_state["icp"] = icp
-        b1, b2 = st.columns(2)
-        if b1.button("💾 Guardar en sesión"):
-            st.success("Perfil guardado en la sesión actual.")
-        if b2.button("📄 Guardar en Excel (Ideal_Customer_Profile)",
-                     type="primary"):
-            crm.save_icp(icp)
-            if persist():
-                st.success("Perfil guardado en la hoja Ideal_Customer_Profile.")
-
-    # ---------- Evaluación + filtros + ficha ----------
-    with tabEval:
-        icp = st.session_state.get("icp") or crm.read_icp()
-        f1, f2, f3, f4 = st.columns(4)
-        f_ind = f1.multiselect("Industry", IND)
-        f_comp = f2.text_input("Company contiene")
-        f_title = f3.text_input("Job Title contiene")
-        f_sen = f4.text_input("Seniority contiene")
-        f5, f6, f7, f8 = st.columns(4)
-        f_loc = f5.text_input("Location contiene")
-        f_flvl = f6.multiselect("Fit Level", FIT_LEVELS)
-        f_fmin = f7.slider("Fit Score mínimo", 0, 100, 0)
-        f_pri = f8.multiselect("Priority", ["Alta", "Media", "Baja"])
-        f9, f10, f11, f12 = st.columns(4)
-        f_li = f9.checkbox("Solo con LinkedIn")
-        f_em = f10.checkbox("Solo con Email")
-        f_ph = f11.checkbox("Solo con Phone")
-        f_n = f12.number_input("Número de leads", 1, 500, 50)
-        f_est = st.multiselect("Estado actual", ["pendiente", "enviado",
-                                                 "respondió", "won", "lost",
-                                                 "blacklist",
-                                                 "prospectar después"])
-
-        if st.button("🔎 Evaluar leads", type="primary"):
-            results = []
-            for ind in (f_ind or IND):
-                for l in crm.all_leads(ind):
-                    stt = crm.state.get(l.key)
-                    if f_comp and _norm(f_comp) not in _norm(l.company):
-                        continue
-                    if f_title and _norm(f_title) not in _norm(l.job_title or ""):
-                        continue
-                    if f_sen and _norm(f_sen) not in _norm(
-                            l.seniority_level or ""):
-                        continue
-                    loc = crm._cell(crm.wb[l.sheet], crm.maps[l.sheet],
-                                    l.row, "Location") or ""
-                    if f_loc and _norm(f_loc) not in _norm(str(loc)):
-                        continue
-                    if f_li and not l.linkedin:
-                        continue
-                    if f_em and not l.email:
-                        continue
-                    if f_ph and not l.phone:
-                        continue
-                    if f_pri and crm.lead_priority(l) not in f_pri:
-                        continue
-                    est = crm.lead_status(l, stt)
-                    if f_est and est not in f_est:
-                        continue
-                    fit = crm.evaluate_lead_fit(l, icp, stt)
-                    if fit["score"] < f_fmin:
-                        continue
-                    if f_flvl and fit["level"] not in f_flvl:
-                        continue
-                    results.append((l.sheet, l.row, fit, str(loc), est))
-                    if len(results) >= f_n:
-                        break
-                if len(results) >= f_n:
-                    break
-            results.sort(key=lambda r: -r[2]["score"])
-            st.session_state["pm_results"] = results
-
-        results = st.session_state.get("pm_results", [])
-        if results:
-            rows = []
-            for s, r, fit, loc, est in results:
-                l = crm.read_lead(s, r)
-                rows.append({"Nombre": l.full_name, "Empresa": l.company,
-                             "Puesto": l.job_title,
-                             "Seniority": l.seniority_level or "—",
-                             "Industria": l.industry, "Ubicación": loc or "—",
-                             "LinkedIn": l.linkedin or "—",
-                             "Email": l.email or "—",
-                             "Fit Score": fit["score"],
-                             "Fit Level": fit["level"],
-                             "Canal recomendado": fit["canal"],
-                             "Razón principal": (fit["pros"][0] if fit["pros"]
-                                                 else (fit["cons"][0]
-                                                       if fit["cons"] else "—")),
-                             "Próxima acción": fit["accion"]})
-            st.dataframe(pd.DataFrame(rows), use_container_width=True,
-                         hide_index=True)
-
-            # ---------- Ficha del lead ----------
-            st.divider()
-            labels = [f"{r['Nombre']} · {r['Empresa']} · "
-                      f"{r['Fit Score']} ({r['Fit Level']})" for r in rows]
-            si = st.selectbox("Ficha del lead", range(len(rows)),
-                              format_func=lambda i: labels[i])
-            s, rw, fit, loc, est = results[si]
-            lead = crm.read_lead(s, rw)
-            stt = crm.state.get(lead.key)
-
-            h1, h2, h3 = st.columns(3)
-            h1.metric("Fit Score", fit["score"])
-            h2.metric("Fit Level", fit["level"])
-            h3.metric("Canal recomendado", fit["canal"])
-            p1, p2 = st.columns(2)
-            p1.write(f"**{lead.full_name}**  \n{lead.job_title or '—'}  \n"
-                     f"{lead.company}  \nSeniority: "
-                     f"{lead.seniority_level or '—'}  \n"
-                     f"Industria: {lead.industry}  \nUbicación: {loc or '—'}")
-            p2.write(f"**LinkedIn:** {lead.linkedin or '—'}  \n"
-                     f"**Email:** {lead.email or '—'}  \n"
-                     f"**Teléfono:** {lead.phone or '—'}  \n"
-                     f"**Estado:** {est}  \n"
-                     f"**Próxima acción:** {fit['accion']}")
-            g1, g2 = st.columns(2)
-            with g1:
-                st.markdown("**✅ Por qué sí prospectarlo**")
-                for pr in fit["pros"] or ["—"]:
-                    st.write("• " + pr)
-            with g2:
-                st.markdown("**⚠️ Por qué no / riesgos**")
-                for cn in fit["cons"] or ["—"]:
-                    st.write("• " + cn)
-            st.write(f"**Problema probable:** {fit['pain']}")
-            st.write(f"**Beneficio relevante:** {fit['beneficio']}")
-
-            msg = st.text_area("Mensaje sugerido (editable)", fit["mensaje"],
-                               height=110, key=f"pm_msg_{s}_{rw}")
-            st.code(msg, language=None)   # botón nativo de copiar
-            if lead.linkedin:
-                st.link_button("🔗 Abrir LinkedIn", lead.linkedin)
-
-            a1, a2, a3, a4 = st.columns(4)
-            if a1.button("✅ Marcar enviado", type="primary"):
-                step, nxt = crm.assisted_mark_sent(
-                    lead, channel=fit["canal"], message=msg)
-                if step is None:
-                    st.warning("Secuencia completa en ese canal.")
-                elif persist():
-                    st.success(f"{step} registrado · próximo follow-up: "
-                               f"{nxt:%Y-%m-%d %H:%M}" if nxt else
-                               f"{step} registrado (último paso).")
-            with a2.popover("💬 Registrar respuesta"):
-                rmsg = st.text_area("Mensaje recibido", key=f"pm_r_{s}_{rw}")
-                if st.button("Guardar respuesta", key=f"pm_rb_{s}_{rw}"):
-                    crm.register_response(lead, fit["canal"], rmsg)
-                    if persist():
-                        st.success("Respuesta registrada; follow-ups pausados.")
-            with a3.popover("🕓 Prospectar después"):
-                rd = st.date_input("Recontactar el",
-                                   dt.date.today() + dt.timedelta(days=30),
-                                   key=f"pm_pd_{s}_{rw}")
-                if st.button("Aplicar", key=f"pm_pdb_{s}_{rw}"):
-                    crm.set_outcome(lead, "Prospectar Después",
-                                    recontact_date=rd.isoformat())
-                    if persist():
-                        st.success(f"Prospectar después ({rd}).")
-            if a4.button("⛔ Blacklist"):
-                crm.set_outcome(lead, "Blacklist")
-                if persist():
-                    st.success("Enviado a Blacklist.")
-        else:
-            st.info("Define tu Cliente Ideal en la primera pestaña y pulsa "
-                    "'Evaluar leads'.")
-
-# =========================================================================== #
-# LINKEDIN MANAGER (asistido: la app organiza, tú envías)
 # =========================================================================== #
 elif page == "💼 LinkedIn Manager":
     st.header("💼 LinkedIn Manager")
-    st.caption("Modo seguro/asistido: sin scraping, sin bots, sin Selenium/Playwright, "
-               "sin lectura de mensajes privados. Tú envías manualmente; la app "
-               "administra la cola, registra y programa los follow-ups.")
+    st.caption("Modo seguro/asistido: sin scraping, sin bots, sin Selenium/"
+               "Playwright. La app organiza, sugiere mensajes y registra; "
+               "tú envías manualmente.")
 
-    wf = crm.workflow_config()
+    tabDash, tabSess, tabProsp, tabInbox, tabNC, tabHist, tabSet = st.tabs(
+        ["📊 Dashboard", "🌐 Browser / Session", "🎯 Prospecting", "📥 Inbox",
+         "🔔 Notifications", "🕓 History", "⚙️ Settings"])
+    icp = st.session_state.get("icp") or crm.read_icp()
 
-    # --- Crear campaña LinkedIn ---
-    with st.expander("➕ Crear campaña LinkedIn", expanded=not crm.read_campaigns()):
-        c1, c2, c3 = st.columns(3)
-        industry = c1.selectbox("Industria", IND, key="lm_ind")
-        n_leads = c2.number_input("Nº de leads", 1, 200, 50, key="lm_n")
-        name = c3.text_input("Nombre de la campaña",
-                             f"{dt.date.today():%b} Managers", key="lm_name")
-        sen_f = st.text_input("Seniority contiene (opcional)", key="lm_sen")
-        if st.button("Crear campaña", type="primary", key="lm_create"):
-            picked = []
-            for l in crm.build_queue(industry, "LinkedIn", 0, n_leads * 3):
-                if not l.linkedin:
-                    continue
-                if sen_f and _norm(sen_f) not in _norm(l.seniority_level or ""):
-                    continue
-                picked.append(l)
-                if len(picked) >= n_leads:
-                    break
-            if not picked:
-                st.error("Ningún lead cumple (necesitan LinkedIn URL).")
-            else:
-                cid = crm.create_campaign(name, "LinkedIn", industry, picked, 0)
-                if persist():
-                    st.success(f"Campaña {cid} '{name}' creada con "
-                               f"{len(picked)} leads.")
-
-    # --- Cola inteligente: solo el siguiente lead pendiente ---
-    camps = [c for c in crm.read_campaigns()
-             if c.get("Status") in ("Activa", "Pendiente")]
-    if not camps:
-        st.info("No hay campañas activas. Crea una arriba.")
-    else:
-        labels = [f"{c['Campaign ID']} · {c['Name']} · paso "
-                  f"{int(c.get('Step') or 0) + 1} · {c['Status']} · "
-                  f"{c.get('Sent') or 0}/{c.get('Total Leads')}" for c in camps]
-        ci = st.selectbox("Campaña", range(len(camps)),
-                          format_func=lambda i: labels[i])
-        camp = camps[ci]
-
-        # activar campaña pendiente / reprogramarla
-        if camp.get("Status") == "Pendiente":
-            a1, a2 = st.columns(2)
-            if a1.button("▶️ Iniciar campaña", type="primary"):
-                crm.wb["Campaigns"].cell(camp["_row"], 6).value = "Activa"
-                if persist():
-                    st.rerun()
-            opt = a2.selectbox("O reprogramar para…",
-                               ["—", "Mañana", "En 3 días", "En una semana",
-                                "Fecha personalizada"])
-            newd = None
-            if opt == "Mañana":
-                newd = dt.date.today() + dt.timedelta(days=1)
-            elif opt == "En 3 días":
-                newd = dt.date.today() + dt.timedelta(days=3)
-            elif opt == "En una semana":
-                newd = dt.date.today() + dt.timedelta(days=7)
-            elif opt == "Fecha personalizada":
-                newd = st.date_input("Fecha", dt.date.today() + dt.timedelta(days=2))
-            if opt != "—" and st.button("Reprogramar campaña"):
-                crm.reschedule_campaign(camp, newd.isoformat())
-                if persist():
-                    st.success(f"Campaña reprogramada al {newd}.")
-
-        pend = crm.campaign_pending_leads(camp)
-        st.metric("Leads pendientes en esta campaña", len(pend))
-        lead = pend[0] if pend else None
-
-        if lead is None:
-            st.success("🎉 Campaña completada. Si quedaban vivos, ya existe su "
-                       "campaña de Follow Up siguiente (revisa el selector).")
+    # ---------- Dashboard (resumen LinkedIn) ----------
+    with tabDash:
+        camps_li = [c for c in crm.read_campaigns()
+                    if c.get("Channel") == "LinkedIn"]
+        d1, d2, d3, d4 = st.columns(4)
+        d1.metric("Campañas LinkedIn", len(camps_li))
+        d2.metric("Activas", len([c for c in camps_li
+                                  if c.get("Status") == "Activa"]))
+        prof = ls_session.confirmed_icp(crm)
+        d3.metric("ICP confirmado", "Sí" if prof else "No")
+        unread = len(li_inbox.read_li_notifications(crm, unread_only=True))
+        d4.metric("Notif. no leídas", unread)
+        li_pend = sum(len(crm.campaign_pending_leads(c)) for c in camps_li
+                      if c.get("Status") in ("Activa", "Pendiente"))
+        st.metric("Leads pendientes en cola LinkedIn", li_pend)
+        if camps_li:
+            st.dataframe(pd.DataFrame([
+                {"Campaña": c["Name"], "Estado": c["Status"],
+                 "Enviados": c.get("Sent"), "Total": c.get("Total Leads"),
+                 "Fecha": c.get("Scheduled Date")} for c in camps_li]),
+                use_container_width=True, hide_index=True)
         else:
-            stt = crm.state.get(lead.key)
-            step, _seq = crm._campaign_step_name(camp)
-            st.subheader(f"Siguiente lead · {step}")
-            i1, i2 = st.columns(2)
-            i1.write(f"**{lead.full_name}**  \n{lead.company}  \n"
-                     f"{lead.job_title or '—'}  \n"
-                     f"Seniority: {lead.seniority_level or '—'}  \n"
-                     f"Industria: {lead.industry}")
-            i2.write(f"**Follow-up actual:** {crm.lead_stage(lead, stt)}  \n"
-                     f"**Próxima acción:** {crm.next_action(lead, stt)}  \n"
-                     f"**LinkedIn:** {lead.linkedin or '—'}")
-            if lead.linkedin:
-                st.link_button("🔗 Abrir perfil", lead.linkedin)
-            with st.expander("Historial de contactos"):
-                log = stt.log
-                if log:
-                    st.dataframe(pd.DataFrame(log), use_container_width=True,
-                                 hide_index=True)
-                else:
-                    st.caption("Sin actividad previa.")
+            st.info("Aún no hay campañas LinkedIn. Crea el ICP en Settings y "
+                    "lanza una en Prospecting.")
 
-            first = (lead.full_name or "").split(" ")[0]
-            default_msg = st.session_state.get(
-                "lm_tmpl", "Hola {first}, vi tu rol en {company} y me gustaría "
-                           "conectar.").format(first=first, company=lead.company,
-                                               title=lead.job_title)
-            msg = st.text_area("Mensaje sugerido (edítalo y cópialo)", default_msg,
-                               height=100, key=f"lm_msg_{lead.key[:20]}")
-            st.code(msg, language=None)   # fácil de copiar
-            user = st.text_input("Usuario que envía", key="lm_user")
-            if st.button("✅ Marcar mensaje como enviado", type="primary"):
-                sent, when = crm.mark_campaign_sent(camp, lead, message=msg,
-                                                    user=user)
-                if persist():
-                    st.success(f"Registrado. Próximo follow-up: "
-                               f"{when:%Y-%m-%d %H:%M} "
-                               f"({crm.fu_gap_hours(int(camp.get('Step') or 0)):.0f}h). "
-                               "Cargando siguiente lead…")
-                    st.rerun()
+    # ---------- Browser / Session ----------
+    with tabSess:
+        st.caption("La app NO automatiza el navegador ni inicia sesión por ti "
+                   "(política de LinkedIn y del proyecto). 'Open LinkedIn' abre "
+                   "el sitio en tu navegador; el login es tuyo. La conexión solo "
+                   "se marca tras tu confirmación real de sesión iniciada.")
+        st.info(ls_session.environment_note())
 
-            # registrar respuesta manual rápida
-            with st.expander("💬 Este lead respondió"):
-                rmsg = st.text_area("Mensaje recibido", key="lm_rmsg")
-                if st.button("Registrar respuesta (pausa follow-ups)"):
-                    crm.register_response(lead, "LinkedIn", rmsg)
+        # estrategia de lanzamiento (solo manual activo; resto slots futuros)
+        opts = list(ls_session.LAUNCHERS.keys())
+        strat = st.selectbox(
+            "Estrategia de sesión", opts,
+            format_func=lambda k: ls_session.LAUNCHERS[k].name +
+            ("" if ls_session.LAUNCHERS[k].enabled else " (no disponible)"))
+        if not ls_session.LAUNCHERS[strat].enabled:
+            st.warning(ls_session.LAUNCHERS[strat].reason_disabled)
+
+        sess = st.session_state.setdefault("li_session",
+                                           ls_session.blank_session())
+        badge = {"Connected": "🟢", "Disconnected": "⚪",
+                 "Verification Required": "🟠", "Session Expired": "🔴",
+                 "Error": "🔴"}.get(sess["status"], "⚪")
+        st.subheader(f"{badge} LinkedIn: {sess['status']}")
+        if sess.get("confirmed_at"):
+            st.caption(f"Confirmada: {sess['confirmed_at']} · sesión "
+                       f"{sess.get('session_id')}")
+
+        b1, b2, b3, b4, b5 = st.columns(5)
+        if b1.button("Connect LinkedIn"):
+            ls_session.set_session_status(
+                sess, "Verification Required",
+                "Abre LinkedIn, inicia sesión y confirma abajo.")
+            st.rerun()
+        b2.link_button("Open LinkedIn",
+                       ls_session.LAUNCHERS["manual"].open_linkedin_url())
+        if b3.button("Verify Session"):
+            st.session_state["li_verify"] = True
+        if b4.button("Reconnect"):
+            ls_session.set_session_status(sess, "Verification Required",
+                                          "Reintenta el inicio de sesión.")
+            st.rerun()
+        if b5.button("Disconnect"):
+            st.session_state["li_session"] = ls_session.blank_session()
+            st.rerun()
+
+        # verificación honesta: confirmación humana (no basta cambiar URL)
+        if st.session_state.get("li_verify") or \
+                sess["status"] == "Verification Required":
+            st.divider()
+            st.write("**Verificación de sesión** — como no automatizamos el "
+                     "navegador, confirma tú que ya iniciaste sesión en "
+                     "LinkedIn en tu equipo.")
+            chk = st.checkbox("Confirmo que inicié sesión en LinkedIn en mi "
+                              "navegador (sin CAPTCHA/2FA pendiente)")
+            cc1, cc2 = st.columns(2)
+            if cc1.button("✅ Marcar como conectado", disabled=not chk,
+                          type="primary"):
+                ls_session.set_session_status(sess, "Connected",
+                                              "Confirmada por el usuario.")
+                st.session_state.pop("li_verify", None)
+                st.success("Sesión marcada como conectada.")
+                st.rerun()
+            if cc2.button("⚠️ LinkedIn me pide verificación (CAPTCHA/2FA)"):
+                ls_session.set_session_status(
+                    sess, "Verification Required",
+                    "LinkedIn requiere verificación manual.")
+                st.warning("LinkedIn requiere verificación manual. Complétala "
+                           "en tu navegador; la app no la resuelve por ti.")
+
+    # ---------- Prospecting ----------
+    with tabProsp:
+        prof = ls_session.confirmed_icp(crm)
+        if not prof:
+            st.warning("⛔ Debes definir y **confirmar el ICP** en la pestaña "
+                       "⚙️ Settings antes de prospectar por LinkedIn.")
+        else:
+            st.success(f"ICP activo: {prof['name']} (v{prof['version']})")
+            icp_obj = prof
+            colf = st.columns(4)
+            f_ind = colf[0].multiselect("Industry", IND)
+            f_comp = colf[1].text_input("Company contiene")
+            f_title = colf[2].text_input("Job Title contiene")
+            f_n = colf[3].number_input("Máx. leads", 1, 300, 50)
+            only_elig = st.checkbox("Solo elegibles (HIGH/MEDIUM fit)",
+                                    value=True)
+
+            if st.button("🔎 Evaluar leads vs ICP", type="primary"):
+                rows, cards = [], []
+                for ind in (f_ind or IND):
+                    for l in crm.all_leads(ind):
+                        if f_comp and _norm(f_comp) not in _norm(l.company):
+                            continue
+                        if f_title and _norm(f_title) not in _norm(
+                                l.job_title or ""):
+                            continue
+                        ev = ls_session.evaluate_lead_against_icp(crm, l,
+                                                                  icp_obj)
+                        if only_elig and not ev["eligible"]:
+                            continue
+                        stt = crm.state.get(l.key)
+                        rows.append({
+                            "Full Name": l.full_name, "Job Title": l.job_title,
+                            "Company": l.company, "Industry": l.industry,
+                            "Seniority": l.seniority_level or "—",
+                            "LinkedIn URL": l.linkedin or "—",
+                            "ICP Score": ev["score"],
+                            "Fit": ev["fit_class"],
+                            "CRM Status": crm.lead_status(l, stt),
+                            "LinkedIn Status":
+                                li_inbox.get_lead_state(crm, l),
+                            "Next Action": ev["recommended_action"]})
+                        cards.append((l.sheet, l.row))
+                        if len(rows) >= f_n:
+                            break
+                    if len(rows) >= f_n:
+                        break
+                rows_sorted = sorted(zip(rows, cards),
+                                     key=lambda t: -t[0]["ICP Score"])
+                st.session_state["li_prosp"] = rows_sorted
+
+            data = st.session_state.get("li_prosp", [])
+            if data:
+                st.dataframe(pd.DataFrame([r for r, _c in data]),
+                             use_container_width=True, hide_index=True)
+                labels = [f"{r['Full Name']} · {r['Company']} · "
+                          f"{r['ICP Score']} ({r['Fit']})" for r, _c in data]
+                si = st.selectbox("Lead", range(len(data)),
+                                  format_func=lambda i: labels[i])
+                _row, (s, rw) = data[si]
+                lead = crm.read_lead(s, rw)
+                ev = ls_session.evaluate_lead_against_icp(crm, lead, icp_obj)
+
+                h1, h2, h3 = st.columns(3)
+                h1.metric("ICP Score", ev["score"])
+                h2.metric("Fit", ev["fit_class"])
+                h3.metric("LinkedIn Status",
+                          li_inbox.get_lead_state(crm, lead))
+                g1, g2 = st.columns(2)
+                with g1:
+                    st.markdown("**✅ Criterios cumplidos**")
+                    for m in ev["matched_criteria"] or ["—"]:
+                        st.write("• " + m)
+                with g2:
+                    st.markdown("**⚠️ Fallidos / warnings**")
+                    for m in (ev["failed_criteria"] + ev["warnings"]) or ["—"]:
+                        st.write("• " + m)
+                if lead.linkedin:
+                    st.link_button("Open Profile", lead.linkedin)
+
+                # botones de prospección
+                a = st.columns(4)
+                if a[0].button("Review Lead"):
+                    li_inbox.transition_lead_state(crm, lead, "REVIEW_REQUIRED",
+                                                   "revisión", "user")
+                    persist()
+                if a[1].button("Prepare Connection"):
+                    st.session_state["li_prepare"] = (s, rw)
+                if a[2].button("Prepare Message"):
+                    prep = li_inbox.prepare_linkedin_message(crm, lead,
+                                                             None, icp)
+                    st.session_state["li_prepmsg"] = prep
+                if a[3].button("Mark Contacted"):
+                    step, nxt = crm.assisted_mark_sent(lead, channel="LinkedIn")
+                    li_inbox.transition_lead_state(crm, lead, "CONTACTED",
+                                                   "marcado contactado", "user")
                     if persist():
-                        st.success("Respuesta registrada; sale de la campaña.")
-                        st.rerun()
+                        st.success(f"Contactado ({step}).")
+                a2 = st.columns(4)
+                if a2[0].button("Skip"):
+                    st.session_state["li_prosp"] = [d for d in data
+                                                    if d[1] != (s, rw)]
+                    st.rerun()
+                if a2[1].button("Blacklist"):
+                    crm.set_outcome(lead, "Blacklist")
+                    li_inbox.transition_lead_state(crm, lead, "BLACKLISTED",
+                                                   "blacklist", "user")
+                    if persist():
+                        st.success("Blacklist.")
+                if a2[2].button("Prospect Later"):
+                    crm.set_outcome(lead, "Prospectar Después")
+                    li_inbox.transition_lead_state(crm, lead, "PROSPECT_LATER",
+                                                   "later", "user")
+                    if persist():
+                        st.success("Prospectar después.")
+                with a2[3].popover("View History"):
+                    log = crm.state.get(lead.key).log
+                    st.dataframe(pd.DataFrame(log) if log else
+                                 pd.DataFrame([{"info": "sin historial"}]),
+                                 use_container_width=True, hide_index=True)
+
+                # preview de conexión (10 pasos) + confirmación
+                if st.session_state.get("li_prepare") == (s, rw):
+                    st.divider()
+                    st.subheader("🔗 Prepare Connection (asistido, manual)")
+                    prep = ls_session.prepare_connection(crm, lead, icp_obj)
+                    for c in prep["checks"]:
+                        st.write(("✅ " if c["ok"] else "❌ ") + c["paso"] +
+                                 (f" — {c['detalle']}" if c["detalle"] else ""))
+                    st.info(prep["preview"])
+                    if prep["ready"]:
+                        st.caption("La conexión la envías TÚ en LinkedIn. Este "
+                                   "botón solo registra que confirmaste la "
+                                   "acción; no automatiza nada.")
+                        if lead.linkedin:
+                            st.link_button("Abrir perfil para conectar",
+                                           lead.linkedin)
+                        if st.button("✔️ Confirm Connection Action",
+                                     type="primary"):
+                            ls_session.log_connection_action(
+                                crm, lead, "connection_confirmed", "ok",
+                                session_id=st.session_state.get(
+                                    "li_session", {}).get("session_id", ""))
+                            li_inbox.transition_lead_state(
+                                crm, lead, "CONNECTION_PENDING",
+                                "confirmada por usuario", "user")
+                            if persist():
+                                st.success("Acción registrada. Envía la "
+                                           "solicitud en LinkedIn.")
+                    else:
+                        st.error("No listo para conexión (revisa los pasos).")
+
+                if st.session_state.get("li_prepmsg"):
+                    pm = st.session_state["li_prepmsg"]
+                    st.divider()
+                    st.subheader("✉️ Prepare Message")
+                    st.text_area("Mensaje", pm["message"], height=110,
+                                 key="li_pm_txt")
+                    st.caption(f"{pm['char_count']} caracteres")
+                    for w in pm["warnings"]:
+                        st.warning(w)
+
+    # ---------- Inbox ----------
+    with tabInbox:
+        _render_inbox()
+
+    # ---------- Notifications ----------
+    with tabNC:
+        _render_li_notifications()
+
+    # ---------- History ----------
+    with tabHist:
+        st.subheader("Historial de acciones de conexión")
+        if "LinkedIn_Connection_Log" in crm.wb.sheetnames:
+            ws = crm.wb["LinkedIn_Connection_Log"]
+            rows = [[ws.cell(r, c).value for c in
+                     range(1, len(ls_session.CONNECTION_LOG_HEADERS) + 1)]
+                    for r in range(2, ws.max_row + 1)]
+            if rows:
+                st.dataframe(pd.DataFrame(
+                    rows, columns=ls_session.CONNECTION_LOG_HEADERS),
+                    use_container_width=True, hide_index=True)
+            else:
+                st.info("Sin acciones registradas.")
+        else:
+            st.info("Sin acciones de conexión todavía.")
+        st.subheader("Evaluaciones ICP guardadas")
+        if "Lead_Fit_Evaluation" in crm.wb.sheetnames:
+            ws = crm.wb["Lead_Fit_Evaluation"]
+            from crm_core import LEAD_FIT_HEADERS
+            rows = [[ws.cell(r, c).value for c in
+                     range(1, len(LEAD_FIT_HEADERS) + 1)]
+                    for r in range(2, ws.max_row + 1)]
+            if rows:
+                st.dataframe(pd.DataFrame(rows, columns=LEAD_FIT_HEADERS).tail(
+                    50), use_container_width=True, hide_index=True)
+
+    # ---------- Settings (ICP obligatorio) ----------
+    with tabSet:
+        st.subheader("🧭 Perfil de Cliente Ideal (obligatorio antes de campañas)")
+        st.caption("Los campos multiselección se poblan con los valores reales "
+                   "de tus leads. Elegir una industria filtra empresas, puestos "
+                   "y seniorities sugeridos.")
+        base_ind = st.multiselect("Target Industries",
+                                  ls_session.suggest_icp_options(crm)
+                                  ["industries"], key="icp_ind")
+        sug = ls_session.suggest_icp_options(crm, industries=base_ind or None)
+
+        def multi_custom(label, options, key):
+            chosen = st.multiselect(label, options, key=key)
+            extra = st.text_input(f"➕ Agregar a {label} (coma)",
+                                  key=key + "_x")
+            if extra:
+                chosen = chosen + [e.strip() for e in extra.split(",")
+                                   if e.strip()]
+            return chosen
+
+        c1, c2 = st.columns(2)
+        with c1:
+            sen = multi_custom("Target Seniority Levels", sug["seniorities"],
+                               "icp_sen")
+            titles = multi_custom("Buyer Personas / Job Titles",
+                                  sug["job_titles"], "icp_titles")
+            comps = multi_custom("Target Companies", sug["companies"],
+                                 "icp_comps")
+        with c2:
+            countries = multi_custom("Target Countries / Regions",
+                                     sug["countries"], "icp_countries")
+            specialties = st.text_input("Specialties / Capabilities (coma)",
+                                        key="icp_spec")
+            keywords = st.text_input("Keywords (coma)", key="icp_kw")
+
+        with st.expander("Campos opcionales"):
+            problems = st.text_input("Problems We Solve", key="icp_prob")
+            valprop = st.text_input("Value Proposition", key="icp_vp")
+            avoid = st.text_input("Leads to Avoid", key="icp_avoid")
+            excl_comp = multi_custom("Excluded Companies", sug["companies"],
+                                     "icp_xcomp")
+            excl_titles = multi_custom("Excluded Job Titles",
+                                       sug["job_titles"], "icp_xtitles")
+            excl_ind = st.multiselect("Excluded Industries",
+                                      ls_session.suggest_icp_options(crm)
+                                      ["industries"], key="icp_xind")
+            notes = st.text_input("Notes", key="icp_notes")
+
+        name = st.text_input("Nombre del ICP", "Mi Cliente Ideal",
+                             key="icp_name")
+        if st.button("✅ Confirmar y guardar ICP", type="primary"):
+            criteria = {
+                "target_industries": base_ind, "seniorities": sen,
+                "job_titles": titles, "target_companies": comps,
+                "countries": countries,
+                "specialties": [s.strip() for s in specialties.split(",")
+                                if s.strip()],
+                "keywords": [k.strip() for k in keywords.split(",")
+                             if k.strip()],
+                "problems": problems, "value_proposition": valprop,
+                "leads_to_avoid": [a.strip() for a in avoid.split(",")
+                                   if a.strip()],
+                "excluded_companies": excl_comp,
+                "excluded_job_titles": excl_titles,
+                "excluded_industries": excl_ind, "notes": notes,
+            }
+            icp_id, ver = ls_session.save_icp_profile(
+                crm, name, criteria, status="confirmed")
+            # también refleja en el ICP simple (para evaluate_lead_fit)
+            crm.save_icp({
+                "industrias_objetivo": ", ".join(base_ind),
+                "puestos_objetivo": ", ".join(titles),
+                "seniority_ideal": ", ".join(sen),
+                "empresas_objetivo": ", ".join(comps),
+                "ubicacion_ideal": ", ".join(countries),
+                "problemas_que_resuelvo": problems,
+                "beneficios": valprop,
+                "keywords_positivas": ", ".join(
+                    [k.strip() for k in keywords.split(",") if k.strip()]),
+                "keywords_negativas": "",
+                "leads_a_evitar": avoid,
+                "canales_preferidos": "LinkedIn, Email, Cold Call",
+                "prioridad_minima": "Baja",
+                "mensaje_base": crm.read_icp().get("mensaje_base", ""),
+            })
+            if persist():
+                st.success(f"ICP '{name}' confirmado y guardado "
+                           f"({icp_id} v{ver}). Ya puedes prospectar.")
+        profs = ls_session.read_icp_profiles(crm)
+        if profs:
+            st.caption("ICPs guardados:")
+            st.dataframe(pd.DataFrame([
+                {"id": p["id"], "name": p["name"], "version": p["version"],
+                 "status": p["status"], "updated_at": p["updated_at"]}
+                for p in profs]), use_container_width=True, hide_index=True)
 
 # =========================================================================== #
 # WORKFLOW CONFIG (+ Follow Up Notification Settings)
